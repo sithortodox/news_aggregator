@@ -40,7 +40,7 @@ class ISourceReader(ABC):
         """
         # pragma: no cover - реализуется наследниками
         if False:  # noqa: SIM108 -- нужен yield, чтобы метод был генератором
-            yield  # type: ignore[unreachable]
+            yield
 
 
 class IFilter(ABC):

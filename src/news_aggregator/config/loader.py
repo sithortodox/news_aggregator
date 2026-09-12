@@ -33,7 +33,7 @@ def _require_list(raw: dict[str, object], key: str) -> list[dict[str, object]]:
     value = raw.get(key, [])
     if not isinstance(value, list):
         raise ConfigError(f"Секция '{key}' должна быть списком")
-    return value  # type: ignore[return-value]
+    return value
 
 
 def _resolve_sources(raw_items: list[object]) -> tuple[Source, ...]:

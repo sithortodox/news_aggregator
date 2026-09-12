@@ -28,6 +28,7 @@ from news_aggregator.config.loader import (
 from news_aggregator.config.schema import AppConfig, ComponentConfig
 from news_aggregator.core.interfaces import (
     IDeduplicator,
+    IEnricher,
     IFilter,
     IPublisher,
     ISourceReader,
@@ -176,9 +177,9 @@ async def build_pipeline(
     storage = _build_storage(registry, config)
     filters = _build_filters(registry, config)
     deduplicators = _build_deduplicators(registry, config, storage)
-    enrichers = [
-        registry.enrichers.create(c.name, **c.params)
-        for c in config.enrichers  # type: ignore[arg-type]
+    enrichers: list[IEnricher] = [
+        registry.enrichers.create(c.name, **c.params)  # type: ignore[misc]
+        for c in config.enrichers
     ]
     publishers = _build_publishers(registry, config)
     readers = _build_readers(registry)

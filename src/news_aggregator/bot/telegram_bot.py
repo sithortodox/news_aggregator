@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -32,7 +33,9 @@ class AggregatorBot:
     def __init__(self, token: str, owner_id: int, repository: ISourceRepository) -> None:
         self._owner_id = owner_id
         self._repository = repository
-        self._app: Application = Application.builder().token(token).build()
+        self._app: Application[Any, Any, Any, Any, Any, Any] = (
+            Application.builder().token(token).build()
+        )
         self._register_handlers()
 
     def _register_handlers(self) -> None:
