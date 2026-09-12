@@ -69,7 +69,9 @@ def slugify_identifier(identifier: str) -> str:
     return slug or "source"
 
 
-def source_from_any(raw: object, *, default_kind: SourceKind = SourceKind.TELEGRAM_CHANNEL) -> Source:
+def source_from_any(
+    raw: object, *, default_kind: SourceKind = SourceKind.TELEGRAM_CHANNEL
+) -> Source:
     """Строит Source из элемента списка 'sources' в YAML.
 
     Поддерживает два формата, чтобы добавление канала было максимально

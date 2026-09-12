@@ -8,7 +8,7 @@ Telegram — согласно требованию "не использоват�
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from news_aggregator.core.models import Source, SourceKind
@@ -59,7 +59,7 @@ def test_supports_telegram_channel_and_group_but_not_fake() -> None:
 
 
 async def test_reads_all_messages_from_scratch_skipping_empty_text() -> None:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     client = _FakeTelethonClient(
         [
             _FakeTgMessage(1, "Первое сообщение с достаточным текстом", now),
@@ -77,7 +77,7 @@ async def test_reads_all_messages_from_scratch_skipping_empty_text() -> None:
 
 
 async def test_reads_only_messages_after_cursor() -> None:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     client = _FakeTelethonClient(
         [
             _FakeTgMessage(1, "Первое", now),

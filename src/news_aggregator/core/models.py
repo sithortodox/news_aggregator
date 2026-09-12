@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 
-class SourceKind(str, Enum):
+class SourceKind(StrEnum):
     """Тип источника сообщений."""
 
     TELEGRAM_CHANNEL = "telegram_channel"

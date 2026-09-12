@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from telethon import TelegramClient
 
@@ -41,7 +41,7 @@ class TelegramSourceReader(ISourceReader):
         self, source: Source, since_external_id: str | None
     ) -> AsyncIterator[RawMessage]:
         min_id = int(since_external_id) if since_external_id else 0
-        fetched_at = datetime.now(tz=timezone.utc)
+        fetched_at = datetime.now(tz=UTC)
 
         try:
             entity = await self._client.get_entity(source.identifier)

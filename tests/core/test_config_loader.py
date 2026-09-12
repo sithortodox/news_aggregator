@@ -179,7 +179,9 @@ publishers:
         load_app_config(config_path)
 
 
-def test_load_env_secrets_defaults_when_no_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_env_secrets_defaults_when_no_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
     monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)
     monkeypatch.delenv("TELEGRAM_TARGET_CHANNEL", raising=False)
