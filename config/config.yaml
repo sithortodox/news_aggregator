@@ -1,0 +1,55 @@
+# Конфигурация персонального агрегатора новостей.
+# Секреты (токены, api_id/api_hash) сюда НЕ помещаются — они берутся из .env.
+
+pipeline:
+  dry_run: true              # true = ничего реально не публикуется, только логируется
+  poll_interval_seconds: 60
+  max_messages_per_source: 100
+
+sources:
+  # Самый простой способ добавить Telegram-канал — просто username строкой.
+  # id, kind (telegram_channel) и display_name подставятся автоматически.
+  # Раскомментируйте и впишите свои каналы (потребуется .env, см. README):
+  # - "@some_news_channel"
+  # - "@another_channel"
+
+  # Если нужно что-то нестандартное (группа, свой id, временно выключить
+  # канал не удаляя его) — можно указать словарём, любые поля кроме
+  # identifier необязательны:
+  # - identifier: "@some_group"
+  #   kind: telegram_group
+  # - identifier: "@paused_channel"
+  #   enabled: false
+
+  - id: fake_demo_source
+    kind: fake
+    identifier: fake_demo_source
+    display_name: "Демо-источник (для MVP без Telegram)"
+    enabled: true
+
+filters:
+  - name: length_filter
+    params:
+      min_length: 20
+  - name: ad_filter
+    params:
+      keywords:
+        - "реклама"
+        - "промокод"
+        - "подпишись и выиграй"
+
+deduplicators:
+  - name: text_hash_deduplicator
+  - name: link_deduplicator
+
+enrichers: []
+
+publishers:
+  - name: console_publisher
+    params:
+      prefix: "[NEWS]"
+
+storage:
+  name: sqlite
+  params:
+    db_path: "data/state.db"

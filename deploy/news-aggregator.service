@@ -1,0 +1,37 @@
+# Пример systemd-юнита для запуска news-aggregator на VPS без Docker.
+#
+# Установка (см. README.md, раздел "Деплой на VPS" -> "Вариант B"):
+#   sudo cp deploy/news-aggregator.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now news-aggregator
+#
+# Перед первым запуском сервиса нужно один раз вручную выполнить
+# интерактивную авторизацию Telethon (см. README) — юнит запускает процесс
+# без интерактивного терминала и не сможет ввести код подтверждения.
+#
+# Отредактируйте User/WorkingDirectory/ExecStart под свой путь установки,
+# если он отличается от /opt/news_aggregator.
+
+[Unit]
+Description=News Aggregator (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=news-aggregator
+Group=news-aggregator
+WorkingDirectory=/opt/news_aggregator
+EnvironmentFile=/opt/news_aggregator/.env
+ExecStart=/opt/news_aggregator/.venv/bin/python -m news_aggregator.main --config config/config.yaml
+Restart=on-failure
+RestartSec=10
+
+# Базовое ужесточение (можно убрать, если что-то мешает в вашем окружении)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/news_aggregator/data
+
+[Install]
+WantedBy=multi-user.target

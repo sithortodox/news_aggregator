@@ -1,0 +1,36 @@
+# Использование:
+#   1. cp .env.example .env  и заполните TELEGRAM_API_ID/TELEGRAM_API_HASH
+#   2. Пропишите TELEGRAM_SESSION_NAME=data/news_aggregator в .env — тогда
+#      файл сессии Telethon будет жить в volume ./data вместе с SQLite.
+#   3. Первый запуск (интерактивный, для ввода кода подтверждения Telegram):
+#        docker compose run --rm news-aggregator --config config/config.yaml --once
+#   4. Постоянная работа в фоне:
+#        docker compose up -d
+#
+# Работа без Telegram (MVP на fake-источнике, dry-run по умолчанию из
+# config/config.yaml) — .env не обязателен, просто docker compose up -d.
+
+services:
+  news-aggregator:
+    build: .
+    image: news-aggregator:latest
+    container_name: news-aggregator
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Конфигурация — read-only, чтобы менять список каналов без
+      # пересборки образа, просто перезапуском контейнера.
+      - ./config:/app/config:ro
+      # SQLite-состояние и файл сессии Telethon (если TELEGRAM_SESSION_NAME
+      # указывает внутрь data/) должны пережить пересоздание контейнера.
+      - ./data:/app/data
+    command: ["--config", "config/config.yaml"]
+    # На VPS процесс работает месяцами — ограничиваем логи Docker, чтобы
+    # они не забили диск (сами логи приложения при этом не теряются,
+    # просто ротируются; полная история не нужна для агрегатора).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

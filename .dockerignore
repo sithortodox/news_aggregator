@@ -1,0 +1,37 @@
+# секреты и состояние — никогда не должны попасть в образ
+.env
+*.env
+*.session
+*.session-journal
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# git и мета
+.git
+.gitignore
+.dockerignore
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# тесты и наши sandbox-скрипты не нужны в образе
+tests/
+_manual_test_runner.py
+
+# ide
+.idea/
+.vscode/
+
+# архивы
+*.zip
