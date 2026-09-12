@@ -92,9 +92,7 @@ async def cmd_remove(args: list[str], repository: ISourceRepository) -> str:
     return f"Не найден источник с id '{source_id}'. Посмотрите /list"
 
 
-async def cmd_set_enabled(
-    args: list[str], repository: ISourceRepository, *, enabled: bool
-) -> str:
+async def cmd_set_enabled(args: list[str], repository: ISourceRepository, *, enabled: bool) -> str:
     """Включает/выключает канал по id: /pause <id> или /resume <id>."""
     verb = "resume" if enabled else "pause"
     if not args:

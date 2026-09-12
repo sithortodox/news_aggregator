@@ -101,9 +101,7 @@ def source_from_any(
         enabled = True
     elif isinstance(raw, dict):
         if "identifier" not in raw:
-            raise ValueError(
-                f"У источника отсутствует обязательное поле 'identifier': {raw!r}"
-            )
+            raise ValueError(f"У источника отсутствует обязательное поле 'identifier': {raw!r}")
         identifier = str(raw["identifier"])
         kind_raw = raw.get("kind")
         try:

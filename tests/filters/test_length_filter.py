@@ -38,9 +38,7 @@ def test_drops_short_text() -> None:
 
 def test_keeps_long_enough_text() -> None:
     filt = LengthFilter(min_length=10)
-    should_drop, reason = filt.should_drop(
-        _make_message("это достаточно длинный текст новости")
-    )
+    should_drop, reason = filt.should_drop(_make_message("это достаточно длинный текст новости"))
     assert should_drop is False
     assert reason is None
 

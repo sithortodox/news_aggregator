@@ -183,9 +183,7 @@ class AggregatorPipeline:
                         source.id,
                         raw.external_id,
                     )
-                    stats.add_error(
-                        f"Ошибка обработки сообщения {source.id}/{raw.external_id}"
-                    )
+                    stats.add_error(f"Ошибка обработки сообщения {source.id}/{raw.external_id}")
         except Exception as exc:
             message = f"Источник '{source.id}' упал: {exc}"
             logger.exception(message)

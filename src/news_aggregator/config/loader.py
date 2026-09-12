@@ -54,9 +54,7 @@ def _resolve_sources(raw_items: list[object]) -> tuple[Source, ...]:
         source = source_from_any(raw_item)
 
         if source.identifier in seen_identifiers:
-            raise ConfigError(
-                f"Канал '{source.identifier}' указан в 'sources' более одного раза"
-            )
+            raise ConfigError(f"Канал '{source.identifier}' указан в 'sources' более одного раза")
         seen_identifiers.add(source.identifier)
 
         source_id = source.id
@@ -97,9 +95,7 @@ def load_app_config(path: str | Path) -> AppConfig:
     try:
         sources = _resolve_sources(sources_raw)
         filters = tuple(component_from_dict(f) for f in _require_list(raw, "filters"))
-        deduplicators = tuple(
-            component_from_dict(d) for d in _require_list(raw, "deduplicators")
-        )
+        deduplicators = tuple(component_from_dict(d) for d in _require_list(raw, "deduplicators"))
         enrichers = tuple(component_from_dict(e) for e in _require_list(raw, "enrichers"))
         publishers = tuple(component_from_dict(p) for p in _require_list(raw, "publishers"))
 

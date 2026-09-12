@@ -53,9 +53,7 @@ class TelegramSourceReader(ISourceReader):
             )
             raise
 
-        async for tg_message in self._client.iter_messages(
-            entity, min_id=min_id, reverse=True
-        ):
+        async for tg_message in self._client.iter_messages(entity, min_id=min_id, reverse=True):
             text = getattr(tg_message, "message", None) or ""
             if not text.strip():
                 # Пропускаем сообщения без текста (только фото/стикер/сервисные).

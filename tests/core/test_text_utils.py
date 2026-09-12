@@ -26,10 +26,7 @@ def test_normalize_text_is_idempotent() -> None:
 
 
 def test_extract_links_finds_http_and_www_and_tme() -> None:
-    text = (
-        "Раз https://example.com/a два www.example.org/b "
-        "три t.me/some_channel/42 конец."
-    )
+    text = "Раз https://example.com/a два www.example.org/b три t.me/some_channel/42 конец."
     links = extract_links(text)
     assert links == (
         "https://example.com/a",

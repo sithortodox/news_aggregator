@@ -54,8 +54,7 @@ class SqliteSourceRepository(ISourceRepository):
 
     def _list_sources_sync(self) -> list[Source]:
         cursor = self._conn.execute(
-            "SELECT id, kind, identifier, display_name, enabled "
-            "FROM sources ORDER BY rowid"
+            "SELECT id, kind, identifier, display_name, enabled FROM sources ORDER BY rowid"
         )
         return [self._row_to_source(row) for row in cursor.fetchall()]
 
@@ -65,8 +64,7 @@ class SqliteSourceRepository(ISourceRepository):
 
     def _get_source_sync(self, source_id: str) -> Source | None:
         cursor = self._conn.execute(
-            "SELECT id, kind, identifier, display_name, enabled "
-            "FROM sources WHERE id = ?",
+            "SELECT id, kind, identifier, display_name, enabled FROM sources WHERE id = ?",
             (source_id,),
         )
         row = cursor.fetchone()

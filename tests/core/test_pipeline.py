@@ -81,9 +81,7 @@ def _make_pipeline(
 
 
 async def test_unique_messages_are_published() -> None:
-    source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     reader = _ScriptedReader(
         "src1",
         [
@@ -104,9 +102,7 @@ async def test_unique_messages_are_published() -> None:
 
 
 async def test_duplicate_messages_are_not_published_twice() -> None:
-    source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     reader = _ScriptedReader(
         "src1",
         [
@@ -127,9 +123,7 @@ async def test_duplicate_messages_are_not_published_twice() -> None:
 
 
 async def test_short_messages_are_filtered_out() -> None:
-    source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     reader = _ScriptedReader("src1", [_msg("src1", "1", "коро")])
     publisher = _RecordingPublisher()
     storage = InMemoryStorage()
@@ -143,9 +137,7 @@ async def test_short_messages_are_filtered_out() -> None:
 
 
 async def test_dry_run_does_not_call_publisher() -> None:
-    source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     reader = _ScriptedReader("src1", [_msg("src1", "1", "Достаточно длинная новость")])
     publisher = _RecordingPublisher()
     storage = InMemoryStorage()
@@ -158,9 +150,7 @@ async def test_dry_run_does_not_call_publisher() -> None:
 
 
 async def test_cursor_is_saved_and_used_on_next_run() -> None:
-    source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     all_messages = [
         _msg("src1", "1", "Первая длинная новость"),
         _msg("src1", "2", "Вторая длинная новость"),
@@ -180,9 +170,7 @@ async def test_cursor_is_saved_and_used_on_next_run() -> None:
 
 
 async def test_failing_source_does_not_stop_other_sources() -> None:
-    good_source = Source(
-        id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1"
-    )
+    good_source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
     bad_source = Source(
         id="failing_source",
         kind=SourceKind.FAKE,
@@ -257,17 +245,13 @@ async def test_source_added_after_pipeline_creation_is_picked_up_next_run() -> N
     publisher = _RecordingPublisher()
     storage = InMemoryStorage()
     repository = InMemorySourceRepository([])  # изначально пусто
-    pipeline = _make_pipeline(
-        reader, [], publisher, storage, source_repository=repository
-    )
+    pipeline = _make_pipeline(reader, [], publisher, storage, source_repository=repository)
 
     stats_before = await pipeline.run_once()
     assert stats_before.sources_total == 0
 
     # "Бот" добавляет канал в тот же репозиторий, которым уже пользуется pipeline.
-    new_source = Source(
-        id="src2", kind=SourceKind.FAKE, identifier="src2", display_name="Src2"
-    )
+    new_source = Source(id="src2", kind=SourceKind.FAKE, identifier="src2", display_name="Src2")
     assert await repository.add_source(new_source) is True
 
     stats_after = await pipeline.run_once()

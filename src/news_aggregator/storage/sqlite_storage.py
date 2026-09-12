@@ -69,9 +69,7 @@ class SqliteStorage(IStorage):
 
     async def set_last_external_id(self, source_id: str, external_id: str) -> None:
         async with self._lock:
-            await asyncio.to_thread(
-                self._set_last_external_id_sync, source_id, external_id
-            )
+            await asyncio.to_thread(self._set_last_external_id_sync, source_id, external_id)
 
     def _set_last_external_id_sync(self, source_id: str, external_id: str) -> None:
         self._conn.execute(
@@ -89,16 +87,12 @@ class SqliteStorage(IStorage):
             return await asyncio.to_thread(self._has_hash_sync, text_hash)
 
     def _has_hash_sync(self, text_hash: str) -> bool:
-        cursor = self._conn.execute(
-            "SELECT 1 FROM seen_hashes WHERE text_hash = ?", (text_hash,)
-        )
+        cursor = self._conn.execute("SELECT 1 FROM seen_hashes WHERE text_hash = ?", (text_hash,))
         return cursor.fetchone() is not None
 
     async def save_hash(self, text_hash: str, source_id: str, external_id: str) -> None:
         async with self._lock:
-            await asyncio.to_thread(
-                self._save_hash_sync, text_hash, source_id, external_id
-            )
+            await asyncio.to_thread(self._save_hash_sync, text_hash, source_id, external_id)
 
     def _save_hash_sync(self, text_hash: str, source_id: str, external_id: str) -> None:
         self._conn.execute(

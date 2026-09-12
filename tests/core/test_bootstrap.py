@@ -44,8 +44,6 @@ def test_registry_creates_sqlite_storage(tmp_path) -> None:  # type: ignore[no-u
 def test_registry_creates_sqlite_source_repository(tmp_path) -> None:  # type: ignore[no-untyped-def]
     registry = build_registry()
 
-    repository = registry.source_repositories.create(
-        "sqlite", db_path=str(tmp_path / "sources.db")
-    )
+    repository = registry.source_repositories.create("sqlite", db_path=str(tmp_path / "sources.db"))
 
     assert isinstance(repository, SqliteSourceRepository)

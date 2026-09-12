@@ -20,9 +20,7 @@ _PROJECT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
 async def test_full_pipeline_from_real_config_dry_run(tmp_path: Path) -> None:
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 
@@ -44,9 +42,7 @@ async def test_full_pipeline_from_real_config_dry_run(tmp_path: Path) -> None:
 async def test_second_run_has_nothing_new_due_to_cursor(tmp_path: Path) -> None:
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 
@@ -63,14 +59,10 @@ async def test_second_run_has_nothing_new_due_to_cursor(tmp_path: Path) -> None:
     assert stats2.messages_published == 0
 
 
-async def test_real_publish_mode_actually_invokes_publisher(
-    tmp_path: Path, capsys
-) -> None:  # type: ignore[no-untyped-def]
+async def test_real_publish_mode_actually_invokes_publisher(tmp_path: Path) -> None:
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_text = config_text.replace("dry_run: true", "dry_run: false")
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
@@ -92,9 +84,7 @@ async def test_channel_added_via_repository_is_picked_up_without_rebuilding_pipe
     быть подхвачен следующим run_once() без пересборки пайплайна."""
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 

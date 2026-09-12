@@ -42,9 +42,7 @@ class _FakeTelethonClient:
 
 
 def _tg_source() -> Source:
-    return Source(
-        id="ch1", kind=SourceKind.TELEGRAM_CHANNEL, identifier="@ch1", display_name="Ch1"
-    )
+    return Source(id="ch1", kind=SourceKind.TELEGRAM_CHANNEL, identifier="@ch1", display_name="Ch1")
 
 
 def test_supports_telegram_channel_and_group_but_not_fake() -> None:

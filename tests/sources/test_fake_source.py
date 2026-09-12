@@ -28,9 +28,7 @@ async def test_reads_only_new_messages_since_cursor() -> None:
     total = len(all_messages)
 
     since_second = all_messages[1].external_id
-    remaining = [
-        msg async for msg in reader.read_new_messages(_source(), since_second)
-    ]
+    remaining = [msg async for msg in reader.read_new_messages(_source(), since_second)]
 
     assert len(remaining) == total - 2
 

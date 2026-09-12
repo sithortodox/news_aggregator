@@ -53,9 +53,7 @@ class TypedRegistry(Generic[T]):
     def create(self, name: str, **kwargs: object) -> T:
         """Создаёт экземпляр компонента по имени и параметрам конфигурации."""
         if name not in self._factories:
-            raise ComponentNotRegisteredError(
-                self._category, name, sorted(self._factories)
-            )
+            raise ComponentNotRegisteredError(self._category, name, sorted(self._factories))
         return self._factories[name](**kwargs)
 
     def available(self) -> list[str]:

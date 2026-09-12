@@ -17,9 +17,7 @@ async def test_validate_config_succeeds_on_real_config(
 ) -> None:
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "validate_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 
@@ -54,9 +52,7 @@ async def test_validate_config_does_not_advance_cursor(tmp_path: Path) -> None:
     источников должен остаться нетронутым для последующего --once."""
     config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
     db_path = tmp_path / "validate_state.db"
-    config_text = config_text.replace(
-        'db_path: "data/state.db"', f'db_path: "{db_path}"'
-    )
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 

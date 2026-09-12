@@ -100,9 +100,7 @@ def _build_readers(registry: ComponentRegistry) -> list[ISourceReader]:
     return readers
 
 
-def _build_publishers(
-    registry: ComponentRegistry, config: AppConfig
-) -> list[IPublisher]:
+def _build_publishers(registry: ComponentRegistry, config: AppConfig) -> list[IPublisher]:
     publishers: list[IPublisher] = []
     for c in config.publishers:
         if c.name == "telegram_publisher":
@@ -119,8 +117,7 @@ def _build_telegram_publisher(
         from news_aggregator.sources.telegram_client import build_telegram_client
     except ImportError as exc:
         raise RuntimeError(
-            "В конфигурации указан publisher 'telegram_publisher', но пакет "
-            "telethon не установлен."
+            "В конфигурации указан publisher 'telegram_publisher', но пакет telethon не установлен."
         ) from exc
 
     secrets = load_env_secrets()
@@ -180,7 +177,8 @@ async def build_pipeline(
     filters = _build_filters(registry, config)
     deduplicators = _build_deduplicators(registry, config, storage)
     enrichers = [
-        registry.enrichers.create(c.name, **c.params) for c in config.enrichers  # type: ignore[arg-type]
+        registry.enrichers.create(c.name, **c.params)
+        for c in config.enrichers  # type: ignore[arg-type]
     ]
     publishers = _build_publishers(registry, config)
     readers = _build_readers(registry)

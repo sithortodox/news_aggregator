@@ -23,9 +23,7 @@ class TelegramPublisher(IPublisher):
 
     def __init__(self, client: TelegramClient, target_channel: str) -> None:
         if not target_channel:
-            raise ValueError(
-                "target_channel не задан. Укажите TELEGRAM_TARGET_CHANNEL в .env"
-            )
+            raise ValueError("target_channel не задан. Укажите TELEGRAM_TARGET_CHANNEL в .env")
         self._client = client
         self._target_channel = target_channel
 
