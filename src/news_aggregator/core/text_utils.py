@@ -88,4 +88,3 @@ def normalize_text(text: str) -> str:
 def compute_text_hash(normalized_text: str) -> str:
     """Считает sha256-хэш нормализованного текста (в hex-представлении)."""
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
-
