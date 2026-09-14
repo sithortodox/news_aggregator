@@ -3,8 +3,10 @@ from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.filters.length_filter import LengthFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
+from news_aggregator.storage.sqlite_simhash_index import SqliteSimhashIndex
 from news_aggregator.storage.sqlite_source_repository import SqliteSourceRepository
 from news_aggregator.storage.sqlite_storage import SqliteStorage
+from tests.support.in_memory_simhash_index import InMemorySimhashIndex
 from tests.support.in_memory_storage import InMemoryStorage
 
 
@@ -15,10 +17,12 @@ def test_registry_has_core_mvp_components() -> None:
     assert "ad_filter" in registry.filters.available()
     assert "text_hash_deduplicator" in registry.deduplicators.available()
     assert "link_deduplicator" in registry.deduplicators.available()
+    assert "simhash_deduplicator" in registry.deduplicators.available()
     assert "console_publisher" in registry.publishers.available()
     assert "fake" in registry.sources.available()
     assert "sqlite" in registry.storages.available()
     assert "sqlite" in registry.source_repositories.available()
+    assert "sqlite" in registry.simhash_indexes.available()
 
 
 def test_registry_creates_working_instances() -> None:
@@ -31,6 +35,14 @@ def test_registry_creates_working_instances() -> None:
     )
     assert isinstance(registry.publishers.create("console_publisher"), ConsolePublisher)
     assert isinstance(registry.sources.create("fake"), FakeSourceReader)
+
+
+def test_registry_creates_simhash_deduplicator() -> None:
+    registry = build_registry()
+
+    dedup = registry.deduplicators.create("simhash_deduplicator", index=InMemorySimhashIndex())
+
+    assert dedup.name == "simhash_deduplicator"
 
 
 def test_registry_creates_sqlite_storage(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -47,3 +59,11 @@ def test_registry_creates_sqlite_source_repository(tmp_path) -> None:  # type: i
     repository = registry.source_repositories.create("sqlite", db_path=str(tmp_path / "sources.db"))
 
     assert isinstance(repository, SqliteSourceRepository)
+
+
+def test_registry_creates_sqlite_simhash_index(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    registry = build_registry()
+
+    index = registry.simhash_indexes.create("sqlite", db_path=str(tmp_path / "simhash.db"))
+
+    assert isinstance(index, SqliteSimhashIndex)

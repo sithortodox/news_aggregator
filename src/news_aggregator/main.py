@@ -16,7 +16,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from news_aggregator.bootstrap import build_registry
 from news_aggregator.config.loader import (
@@ -31,6 +31,7 @@ from news_aggregator.core.interfaces import (
     IEnricher,
     IFilter,
     IPublisher,
+    ISimhashIndex,
     ISourceReader,
     ISourceRepository,
     IStorage,
@@ -64,12 +65,19 @@ def _build_filters(registry: ComponentRegistry, config: AppConfig) -> list[IFilt
 
 
 def _build_deduplicators(
-    registry: ComponentRegistry, config: AppConfig, storage: IStorage
+    registry: ComponentRegistry,
+    config: AppConfig,
+    storage: IStorage,
+    simhash_index: ISimhashIndex,
 ) -> list[IDeduplicator]:
-    return [
-        registry.deduplicators.create(c.name, storage=storage, **c.params)  # type: ignore[misc]
-        for c in config.deduplicators
-    ]
+    deduplicators: list[IDeduplicator] = []
+    for c in config.deduplicators:
+        if c.name == "simhash_deduplicator":
+            created = registry.deduplicators.create(c.name, index=simhash_index, **c.params)
+        else:
+            created = registry.deduplicators.create(c.name, storage=storage, **c.params)
+        deduplicators.append(cast(IDeduplicator, created))
+    return deduplicators
 
 
 def _build_readers(registry: ComponentRegistry) -> list[ISourceReader]:
@@ -134,13 +142,14 @@ def _build_telegram_publisher(
     )
 
 
-def _source_repository_db_path(config: AppConfig) -> str:
-    """Путь к БД репозитория источников.
+def _shared_sqlite_db_path(config: AppConfig) -> str:
+    """Путь к общей SQLite-базе состояния.
 
-    По умолчанию — тот же файл, что и у основного хранилища (это просто
-    ещё одна таблица в той же SQLite-базе), чтобы не плодить отдельную
-    секцию конфигурации ради одного пути. Если storage не sqlite или путь
-    не задан, используется тот же дефолт, что и у SqliteStorage.
+    Используется и для репозитория источников, и для индекса SimHash-
+    отпечатков — это просто ещё пара таблиц в той же БД, что и основное
+    хранилище (courses/hashes/links), чтобы не плодить лишние секции
+    конфигурации ради путей к файлам. Если storage не sqlite или путь не
+    задан, используется тот же дефолт, что и у SqliteStorage.
     """
     if config.storage.name == "sqlite":
         db_path = config.storage.params.get("db_path")
@@ -176,7 +185,10 @@ async def build_pipeline(
     """
     storage = _build_storage(registry, config)
     filters = _build_filters(registry, config)
-    deduplicators = _build_deduplicators(registry, config, storage)
+    simhash_index: ISimhashIndex = registry.simhash_indexes.create(  # type: ignore[assignment]
+        "sqlite", db_path=_shared_sqlite_db_path(config)
+    )
+    deduplicators = _build_deduplicators(registry, config, storage, simhash_index)
     enrichers: list[IEnricher] = [
         registry.enrichers.create(c.name, **c.params)  # type: ignore[misc]
         for c in config.enrichers
@@ -185,7 +197,7 @@ async def build_pipeline(
     readers = _build_readers(registry)
 
     source_repository: ISourceRepository = registry.source_repositories.create(  # type: ignore[assignment]
-        "sqlite", db_path=_source_repository_db_path(config)
+        "sqlite", db_path=_shared_sqlite_db_path(config)
     )
     await _seed_sources_from_config(source_repository, config.sources)
 

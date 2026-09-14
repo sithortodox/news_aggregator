@@ -17,10 +17,12 @@ import logging
 from news_aggregator.core.registry import ComponentRegistry
 from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.dedup.link_deduplicator import LinkDeduplicator
+from news_aggregator.dedup.simhash_deduplicator import SimHashDeduplicator
 from news_aggregator.filters.ad_filter import AdFilter
 from news_aggregator.filters.length_filter import LengthFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
+from news_aggregator.storage.sqlite_simhash_index import SqliteSimhashIndex
 from news_aggregator.storage.sqlite_source_repository import SqliteSourceRepository
 from news_aggregator.storage.sqlite_storage import SqliteStorage
 
@@ -35,9 +37,12 @@ def build_registry() -> ComponentRegistry:
     registry.filters.register("length_filter", LengthFilter)
     registry.filters.register("ad_filter", AdFilter)
 
-    # Дедупликаторы (принимают storage - подставляется в main.py при создании)
+    # Дедупликаторы. text_hash/link принимают storage, simhash_deduplicator —
+    # index (свой отдельный SimHash-индекс) - подстановка происходит в
+    # main.py._build_deduplicators.
     registry.deduplicators.register("text_hash_deduplicator", TextHashDeduplicator)
     registry.deduplicators.register("link_deduplicator", LinkDeduplicator)
+    registry.deduplicators.register("simhash_deduplicator", SimHashDeduplicator)
 
     # Обогатители: пока нет ни одного встроенного (Stage вне рамок MVP),
     # но категория уже готова к расширению без изменения пайплайна.
@@ -54,6 +59,10 @@ def build_registry() -> ComponentRegistry:
     # Репозиторий списка источников (используется и пайплайном, и ботом
     # управления каналами — см. news_aggregator.bot)
     registry.source_repositories.register("sqlite", SqliteSourceRepository)
+
+    # Индекс SimHash-отпечатков для simhash_deduplicator (отдельная таблица
+    # той же SQLite-базы, см. storage/sqlite_simhash_index.py)
+    registry.simhash_indexes.register("sqlite", SqliteSimhashIndex)
 
     _try_register_telegram(registry)
 

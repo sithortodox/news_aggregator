@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 from news_aggregator.core.models import (
     DeduplicationResult,
@@ -132,6 +133,38 @@ class IStorage(ABC):
     @abstractmethod
     async def save_link(self, link: str, source_id: str, external_id: str) -> None:
         """Сохраняет ссылку опубликованного сообщения."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Освобождает ресурсы хранилища (соединения и т.п.)."""
+
+
+class ISimhashIndex(ABC):
+    """Хранилище SimHash-отпечатков недавних сообщений для поиска почти-дублей.
+
+    Отдельный интерфейс от IStorage (по той же логике, что и
+    ISourceRepository): это не точное совпадение "видели/не видели", а
+    поиск по расстоянию Хэмминга среди отпечатков за ограниченное окно
+    времени — принципиально другая форма запроса.
+
+    Реализация обязана сама ограничивать объём хранимых данных (см.
+    purge_older_than) — вызывающий код (SimHashDeduplicator) вызывает его
+    при каждом remember(), но реализация вправе делать это и по-другому
+    (например, по расписанию), лишь бы find_recent не деградировал
+    бесконечно растущим сканированием.
+    """
+
+    @abstractmethod
+    async def find_recent(self, since: datetime) -> list[int]:
+        """Возвращает SimHash-отпечатки всех сообщений, сохранённых начиная с since."""
+
+    @abstractmethod
+    async def save(self, simhash: int, source_id: str, external_id: str) -> None:
+        """Сохраняет отпечаток сообщения с текущей меткой времени."""
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        """Удаляет отпечатки старше cutoff. Возвращает число удалённых записей."""
 
     @abstractmethod
     async def close(self) -> None:

@@ -61,3 +61,34 @@ def test_same_news_different_wording_can_share_hash_after_normalization() -> Non
     a = normalize_text("Курс доллара вырос! Подробнее: https://a.com/x")
     b = normalize_text("курс доллара вырос подробнее: https://b.com/y")
     assert compute_text_hash(a) == compute_text_hash(b)
+
+
+def test_normalize_text_strips_hashtags_entirely() -> None:
+    text = "Курс доллара вырос #экономика #новости"
+    assert "экономика" not in normalize_text(text)
+    assert "новости" not in normalize_text(text)
+    assert normalize_text(text) == "курс доллара вырос"
+
+
+def test_normalize_text_strips_mentions_entirely() -> None:
+    text = "Смотрите также @some_channel про этот случай"
+    normalized = normalize_text(text)
+    assert "some_channel" not in normalized
+    assert normalized == "смотрите также про этот случай"
+
+
+def test_normalize_text_collapses_stretched_repeated_chars() -> None:
+    assert normalize_text("Оооочень интересная новость!!!!!") == "оочень интересная новость"
+
+
+def test_normalize_text_keeps_legitimate_double_letters() -> None:
+    # "касса", "русский" - двойные буквы не должны схлопываться (порог: 3+).
+    assert normalize_text("Русская касса выросла") == "русская касса выросла"
+
+
+def test_normalize_text_with_hashtag_and_mention_matches_plain_version() -> None:
+    # Реалистичный кейс: один и тот же текст, но один канал добавил хэштег
+    # и упоминание при репосте — это не должно мешать дедупликации.
+    plain = "Курс доллара резко вырос сегодня утром"
+    decorated = "Курс доллара резко вырос сегодня утром #экономика @repost_channel"
+    assert normalize_text(plain) == normalize_text(decorated)

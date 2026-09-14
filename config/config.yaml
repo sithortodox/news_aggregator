@@ -41,6 +41,11 @@ filters:
 deduplicators:
   - name: text_hash_deduplicator
   - name: link_deduplicator
+  - name: simhash_deduplicator
+    params:
+      max_hamming_distance: 4    # 0..64, чем меньше - тем строже совпадение
+      lookback_hours: 12         # сравнивать только с сообщениями за последние N часов
+      shingle_size: 3            # длина символьных n-грамм для отпечатка
 
 enrichers: []
 

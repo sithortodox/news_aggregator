@@ -9,8 +9,11 @@
 
 - Чтение из Telegram-каналов/групп (через [Telethon](https://docs.telethon.dev/))
   или из фейкового источника — для локальной проверки без Telegram.
-- Нормализация текста и sha256-хэширование для сравнения новостей.
-- Дедупликация по тексту и по ссылкам первоисточника.
+- Нормализация текста (агрессивная: хэштеги/упоминания, растянутые
+  повторы символов) и sha256-хэширование для сравнения новостей.
+- Дедупликация по тексту, по ссылкам первоисточника и по SimHash
+  (находит почти дословные повторы — с другой пунктуацией, припиской
+  источника и т.п. — даже без общей ссылки и не побитово идентичный текст).
 - Фильтрация коротких/пустых постов и рекламы по ключевым словам.
 - Публикация в Telegram-канал или в консоль (легко добавить свой издатель).
 - Асинхронное SQLite-хранилище состояния (курсоры источников, история хэшей/ссылок).
@@ -30,17 +33,20 @@ src/news_aggregator/
 ├── core/            # Домен и оркестрация. НЕ зависит от Telegram/SQLite.
 │   ├── models.py        Source, RawMessage, ProcessedMessage,
 │   │                     DeduplicationResult, PipelineStats
-│   ├── interfaces.py     ISourceReader, ISourceRepository, IFilter,
-│   │                     IDeduplicator, IEnricher, IPublisher, IStorage (ABC)
+│   ├── interfaces.py     ISourceReader, ISourceRepository, ISimhashIndex,
+│   │                     IFilter, IDeduplicator, IEnricher, IPublisher,
+│   │                     IStorage (ABC)
 │   ├── text_utils.py     normalize_text, extract_links, compute_text_hash
+│   ├── simhash.py         compute_simhash, hamming_distance
 │   ├── registry.py       ComponentRegistry / TypedRegistry
 │   └── pipeline.py       AggregatorPipeline — читает → нормализует →
 │                          фильтрует → дедуплицирует → публикует → сохраняет
 ├── config/          # YAML + .env, без секретов в датаклассах
-├── storage/         # SqliteStorage(IStorage), SqliteSourceRepository(ISourceRepository)
+├── storage/         # SqliteStorage, SqliteSourceRepository, SqliteSimhashIndex
 ├── sources/          fake_source.py, telegram_source.py, telegram_client.py
 ├── filters/           length_filter.py, ad_filter.py
-├── dedup/              hash_deduplicator.py, link_deduplicator.py
+├── dedup/              hash_deduplicator.py, link_deduplicator.py,
+│                        simhash_deduplicator.py
 ├── publishers/         console_publisher.py, telegram_publisher.py
 ├── bot/              commands.py (чистая логика), telegram_bot.py (обвязка PTB)
 ├── bootstrap.py     # Регистрация всех компонентов в ComponentRegistry
@@ -248,13 +254,66 @@ python -m news_aggregator.main --config config/config.yaml --interval 120
 | `pipeline`       | `dry_run`, `poll_interval_seconds`, `max_messages_per_source`      |
 | `sources`        | **начальный** список источников (см. "Бот управления каналами" — актуальный список живёт в SQLite и может отличаться от YAML) |
 | `filters`        | список `{name, params}` — фильтры из `ComponentRegistry.filters`   |
-| `deduplicators`  | список `{name, params}` — дедупликаторы (получают `storage` автоматически) |
+| `deduplicators`  | список `{name, params}` — дедупликаторы (см. раздел "Дедупликация" ниже) |
 | `enrichers`      | список `{name, params}` — обогатители (пока пусто в MVP)           |
 | `publishers`     | список `{name, params}` — издатели                                 |
 | `storage`        | `{name, params}` — хранилище состояния (по умолчанию `sqlite`)     |
 
 **Секреты никогда не хранятся в `config.yaml`** — только в `.env`
 (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_TARGET_CHANNEL`).
+
+## Дедупликация
+
+Дедупликаторы в `config.yaml` проверяются **по порядку** и пайплайн
+останавливается на первом, который признал сообщение дублем — поэтому
+дешёвые точные проверки идут первыми, а более дорогая эвристика (SimHash)
+последней:
+
+```yaml
+deduplicators:
+  - name: text_hash_deduplicator      # точное совпадение нормализованного текста
+  - name: link_deduplicator            # общая ссылка на первоисточник
+  - name: simhash_deduplicator          # почти дословное совпадение (см. ниже)
+    params:
+      max_hamming_distance: 4
+      lookback_hours: 12
+      shingle_size: 3
+```
+
+### Агрессивная нормализация (уровень 1)
+
+Прежде чем текст вообще попадает в хэш или в SimHash, `normalize_text`
+(см. `core/text_utils.py`) агрессивно его упрощает: Unicode NFKC,
+удаление хэштегов/упоминаний (`#tag`, `@channel`) целиком, удаление ссылок,
+нижний регистр, схлопывание растянутых повторов символов (`"оооочень"` ->
+`"оочень"`, но `"касса"` не трогается — порог 3+ повторов), удаление
+пунктуации/эмодзи, схлопывание пробелов. Это уже само по себе ловит
+хорошую долю "дублей" за счёт `text_hash_deduplicator`, почти бесплатно.
+
+### SimHash (уровень 2): почти дословные повторы
+
+`simhash_deduplicator` считает [SimHash](https://en.wikipedia.org/wiki/SimHash)
+по символьным 3-граммам нормализованного текста и сравнивает расстояние
+Хэмминга с сообщениями за последние `lookback_hours` часов (не дольше —
+иначе индекс отпечатков рос бы бесконечно; после каждого сохранения
+устаревшие записи вне окна автоматически удаляются).
+
+**Важно понимать масштаб задачи**: это не семантическая дедупликация. Он
+ловит **почти дословные** повторы — тот же текст с другой пунктуацией,
+приставкой источника в конце, случайным эмодзи, который не убрала
+нормализация. Два независимых пересказа одного события *разными словами*
+(например, "ЦБ поднял ставку" vs "Центробанк повысил ставку до рекордного
+уровня") SimHash, скорее всего, не поймает — для этого нужны эмбеддинги
+(semantic similarity), что в проект пока не входит.
+
+На реальных примерах (посты про одно и то же событие, различающиеся
+только декором/приставкой) расстояние Хэмминга обычно получается 0–7, а
+между текстами о разных событиях — 25–40+. Порог по умолчанию (4) выбран
+консервативно, с большим запасом от этого "шумового пола"; если некоторые
+почти-дубли всё же проходят как уникальные, можно смело поднять
+`max_hamming_distance` до 8–10 — запас прочности большой. Компромисс
+обратный: чем выше порог, тем выше риск случайно принять две разные, но
+похожие по структуре новости за дубль.
 
 ## Расширение: добавление нового компонента
 
@@ -275,7 +334,7 @@ python -m news_aggregator.main --config config/config.yaml --interval 120
    ```
 
 Аналогично для `IDeduplicator`, `IEnricher`, `IPublisher`, `ISourceReader`,
-`IStorage`, `ISourceRepository`.
+`IStorage`, `ISourceRepository`, `ISimhashIndex`.
 
 ## Docker
 
@@ -535,12 +594,13 @@ Docker-образа) автоматически запускается в GitHub
 
 Юнит-тесты не используют реальный Telegram — Telegram-адаптеры тестируются
 через лёгкие тестовые двойники клиента. Дедупликаторы и пайплайн
-тестируются через `InMemoryStorage`/`InMemorySourceRepository` (см.
-`tests/support/`), а `SqliteStorage`/`SqliteSourceRepository` — отдельными
-тестами с временной БД. Бизнес-логика команд бота (`bot/commands.py`)
-тестируется без установленного `python-telegram-bot` — она не зависит от
-этой библиотеки напрямую; сама обвязка `bot/telegram_bot.py` — тонкий слой
-поверх неё.
+тестируются через `InMemoryStorage`/`InMemorySourceRepository`/
+`InMemorySimhashIndex` (см. `tests/support/`), а `SqliteStorage`/
+`SqliteSourceRepository`/`SqliteSimhashIndex` — отдельными тестами с
+временной БД (включая граничные 64-битные значения SimHash). Бизнес-логика
+команд бота (`bot/commands.py`) тестируется без установленного
+`python-telegram-bot` — она не зависит от этой библиотеки напрямую; сама
+обвязка `bot/telegram_bot.py` — тонкий слой поверх неё.
 
 ## Известные ограничения
 
@@ -548,9 +608,10 @@ Docker-образа) автоматически запускается в GitHub
   учитывает словоизменение (например, ключевое слово "скидка" не совпадёт
   со словоформой "скидкой"). Для лучшего покрытия перечисляйте нужные
   словоформы явно в `config.yaml`.
-- Дедупликация не использует семантическое сходство (embeddings) — только
-  точное совпадение нормализованного текста или ссылки. Разные
-  переформулировки одной новости без общей ссылки не будут признаны дублями.
+- Дедупликация не использует семантическое сходство (embeddings) — точное
+  совпадение текста/ссылки плюс SimHash ловят почти дословные повторы (см.
+  раздел "Дедупликация"), но независимые переформулировки одной новости
+  *разными словами*, без общей ссылки, дублями признаны не будут.
 - Если канал одновременно объявлен в `config.yaml` и удалён через `/remove`
   в боте, при следующем перезапуске он снова появится (YAML — это
   "начальный список", который досеивается при каждом старте, если канала
