@@ -77,7 +77,9 @@ def test_unrelated_texts_have_large_hamming_distance() -> None:
         hash_a = compute_simhash(normalize_text(text_a))
         hash_b = compute_simhash(normalize_text(text_b))
         distance = hamming_distance(hash_a, hash_b)
-        assert distance > 10, f"distance={distance} для НЕсвязанных текстов: {text_a!r} vs {text_b!r}"
+        assert distance > 10, (
+            f"distance={distance} для НЕсвязанных текстов: {text_a!r} vs {text_b!r}"
+        )
 
 
 def test_different_shingle_sizes_still_deterministic() -> None:
