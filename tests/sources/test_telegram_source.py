@@ -16,10 +16,19 @@ from news_aggregator.sources.telegram_source import TelegramSourceReader
 
 
 class _FakeTgMessage:
-    def __init__(self, id: int, message: str | None, date: datetime) -> None:
+    def __init__(
+        self,
+        id: int,
+        message: str | None,
+        date: datetime,
+        media: object | None = None,
+        photo: object | None = None,
+    ) -> None:
         self.id = id
         self.message = message
         self.date = date
+        self.media = media
+        self.photo = photo
 
 
 class _FakeTelethonClient:
@@ -72,6 +81,50 @@ async def test_reads_all_messages_from_scratch_skipping_empty_text() -> None:
     assert [r.external_id for r in results] == ["1", "3"]
     assert client.get_entity_calls == ["@ch1"]
     assert client.iter_calls == [(0, True)]
+
+
+async def test_captures_photo_media_as_attachment() -> None:
+    now = datetime.now(tz=UTC)
+    fake_photo_media = SimpleNamespace(id="photo-media-ref")
+    client = _FakeTelethonClient(
+        [
+            _FakeTgMessage(
+                1, "Подпись к фото", now, media=fake_photo_media, photo=SimpleNamespace()
+            ),
+        ]
+    )
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), None)]
+
+    assert len(results) == 1
+    assert results[0].media is not None
+    assert results[0].media.kind == "photo"
+    assert results[0].media.native_ref is fake_photo_media
+
+
+async def test_captures_document_media_as_attachment() -> None:
+    now = datetime.now(tz=UTC)
+    fake_doc_media = SimpleNamespace(id="doc-media-ref")
+    client = _FakeTelethonClient(
+        [_FakeTgMessage(1, "Подпись к файлу", now, media=fake_doc_media, photo=None)]
+    )
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), None)]
+
+    assert results[0].media is not None
+    assert results[0].media.kind == "document"
+
+
+async def test_no_media_leaves_media_field_none() -> None:
+    now = datetime.now(tz=UTC)
+    client = _FakeTelethonClient([_FakeTgMessage(1, "Просто текст", now)])
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), None)]
+
+    assert results[0].media is None
 
 
 async def test_reads_only_messages_after_cursor() -> None:

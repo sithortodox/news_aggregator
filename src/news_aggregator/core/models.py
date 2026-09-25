@@ -41,6 +41,27 @@ class Source:
 
 
 @dataclass(frozen=True, slots=True)
+class MediaAttachment:
+    """Непрозрачная ссылка на медиавложение сообщения-источника.
+
+    Ядро намеренно не заглядывает внутрь ``native_ref`` — это объект,
+    специфичный для конкретного адаптера-источника (например, объект
+    media из Telethon), и интерпретировать его умеет только парный
+    адаптер-publisher того же источника. Так ядро остаётся независимым
+    от Telegram/Telethon, но при этом может пронести вложение от ридера
+    до publisher'а без скачивания и повторной загрузки файла.
+
+    Attributes:
+        kind: Человекочитаемый тип вложения ("photo", "document" и т.д.),
+            используется только для логов.
+        native_ref: Специфичный для адаптера объект медиа.
+    """
+
+    kind: str
+    native_ref: object
+
+
+@dataclass(frozen=True, slots=True)
 class RawMessage:
     """Сырое сообщение, полученное из источника без какой-либо обработки.
 
@@ -52,6 +73,7 @@ class RawMessage:
         text: Исходный текст сообщения как есть.
         posted_at: Время публикации сообщения в источнике.
         fetched_at: Время получения сообщения агрегатором.
+        media: Вложенный медиафайл (фото/документ), если есть, иначе None.
     """
 
     source_id: str
@@ -59,6 +81,7 @@ class RawMessage:
     text: str
     posted_at: datetime
     fetched_at: datetime
+    media: MediaAttachment | None = None
 
 
 @dataclass(frozen=True, slots=True)

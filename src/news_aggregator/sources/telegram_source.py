@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from telethon import TelegramClient
 
 from news_aggregator.core.interfaces import ISourceReader
-from news_aggregator.core.models import RawMessage, Source, SourceKind
+from news_aggregator.core.models import MediaAttachment, RawMessage, Source, SourceKind
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +65,17 @@ class TelegramSourceReader(ISourceReader):
                 continue
 
             posted_at = tg_message.date or fetched_at
+            media = None
+            tg_media = getattr(tg_message, "media", None)
+            if tg_media is not None:
+                kind = "photo" if getattr(tg_message, "photo", None) is not None else "document"
+                media = MediaAttachment(kind=kind, native_ref=tg_media)
+
             yield RawMessage(
                 source_id=source.id,
                 external_id=str(tg_message.id),
                 text=text,
                 posted_at=posted_at,
                 fetched_at=fetched_at,
+                media=media,
             )
