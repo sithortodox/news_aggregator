@@ -108,13 +108,9 @@ async def test_new_source_without_cursor_and_empty_channel_reads_nothing() -> No
 
 async def test_captures_photo_media_as_attachment() -> None:
     now = datetime.now(tz=UTC)
-    fake_photo_media = SimpleNamespace(id="photo-media-ref")
+    fake_photo = SimpleNamespace(id="photo-ref")
     client = _FakeTelethonClient(
-        [
-            _FakeTgMessage(
-                1, "Подпись к фото", now, media=fake_photo_media, photo=SimpleNamespace()
-            ),
-        ]
+        [_FakeTgMessage(1, "Подпись к фото", now, media=SimpleNamespace(), photo=fake_photo)]
     )
     reader = TelegramSourceReader(client)
 
@@ -123,21 +119,21 @@ async def test_captures_photo_media_as_attachment() -> None:
     assert len(results) == 1
     assert results[0].media is not None
     assert results[0].media.kind == "photo"
-    assert results[0].media.native_ref is fake_photo_media
+    assert results[0].media.native_ref is fake_photo
 
 
 async def test_captures_document_media_as_attachment() -> None:
     now = datetime.now(tz=UTC)
-    fake_doc_media = SimpleNamespace(id="doc-media-ref")
+    fake_document = SimpleNamespace(id="document-ref")
     client = _FakeTelethonClient(
         [
             _FakeTgMessage(
                 1,
                 "Подпись к файлу",
                 now,
-                media=fake_doc_media,
+                media=SimpleNamespace(),
                 photo=None,
-                document=SimpleNamespace(),
+                document=fake_document,
             )
         ]
     )
@@ -147,6 +143,7 @@ async def test_captures_document_media_as_attachment() -> None:
 
     assert results[0].media is not None
     assert results[0].media.kind == "document"
+    assert results[0].media.native_ref is fake_document
 
 
 async def test_link_preview_media_is_not_treated_as_attachment() -> None:
@@ -166,6 +163,36 @@ async def test_link_preview_media_is_not_treated_as_attachment() -> None:
     results = [r async for r in reader.read_new_messages(_tg_source(), None)]
 
     assert results[0].media is None
+
+
+async def test_link_preview_with_embedded_photo_uses_resolved_photo_not_raw_media() -> None:
+    """Регресс: Telethon-свойство .photo резолвится и внутрь web-превью,
+    если у ссылки есть встроенная картинка (типичный случай для многих
+    ссылок с обложкой) — .media при этом остаётся MessageMediaWebPage.
+    native_ref обязан быть resolved-объектом .photo, а не .media, иначе
+    send_file падает с TypeError('Cannot use MessageMediaWebPage...')."""
+    now = datetime.now(tz=UTC)
+    fake_webpage_media = SimpleNamespace(id="webpage-preview")
+    fake_preview_photo = SimpleNamespace(id="preview-photo-ref")
+    client = _FakeTelethonClient(
+        [
+            _FakeTgMessage(
+                1,
+                "Текст со ссылкой с превью-картинкой",
+                now,
+                media=fake_webpage_media,
+                photo=fake_preview_photo,
+            )
+        ]
+    )
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), None)]
+
+    assert results[0].media is not None
+    assert results[0].media.kind == "photo"
+    assert results[0].media.native_ref is fake_preview_photo
+    assert results[0].media.native_ref is not fake_webpage_media
 
 
 async def test_no_media_leaves_media_field_none() -> None:

@@ -78,16 +78,18 @@ class TelegramSourceReader(ISourceReader):
 
             posted_at = tg_message.date or fetched_at
             media = None
-            # Используем property-обёртки Telethon (.photo/.document), а не
-            # сырое tg_message.media напрямую: .media может быть непустым и
-            # для превью ссылки (MessageMediaWebPage), опроса, геолокации и
-            # т.п. — это не файл, send_file с таким объектом падает с
-            # TypeError. .photo/.document возвращают None для всего, что не
-            # является настоящим загружаемым вложением.
+            # ВАЖНО: используем именно resolved-объекты .photo/.document, а
+            # не tg_message.media напрямую как native_ref. Telethon эти
+            # property'и резолвит и внутрь превью ссылки (web_preview),
+            # если у него есть встроенная картинка/видео — то есть .photo
+            # может быть не None, даже когда tg_message.media остаётся
+            # MessageMediaWebPage. send_file(..., file=MessageMediaWebPage)
+            # падает с TypeError, а send_file(..., file=<Photo>/<Document>)
+            # работает и для превью, и для настоящих вложений.
             if getattr(tg_message, "photo", None) is not None:
-                media = MediaAttachment(kind="photo", native_ref=tg_message.media)
+                media = MediaAttachment(kind="photo", native_ref=tg_message.photo)
             elif getattr(tg_message, "document", None) is not None:
-                media = MediaAttachment(kind="document", native_ref=tg_message.media)
+                media = MediaAttachment(kind="document", native_ref=tg_message.document)
 
             yield RawMessage(
                 source_id=source.id,
