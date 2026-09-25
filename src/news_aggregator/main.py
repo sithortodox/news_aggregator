@@ -41,6 +41,8 @@ from news_aggregator.core.pipeline import AggregatorPipeline
 from news_aggregator.core.registry import ComponentNotRegisteredError, ComponentRegistry
 
 if TYPE_CHECKING:
+    from telethon import TelegramClient
+
     from news_aggregator.bot.telegram_bot import AggregatorBot as AggregatorBotType
 
 logger = logging.getLogger("news_aggregator")
@@ -80,7 +82,29 @@ def _build_deduplicators(
     return deduplicators
 
 
-def _build_readers(registry: ComponentRegistry) -> list[ISourceReader]:
+async def _get_shared_telegram_client(
+    secrets: TelegramSecrets, cache: dict[str, TelegramClient]
+) -> TelegramClient:
+    """Строит и запускает единственный TelegramClient на процесс.
+
+    Ридер и publisher оба используют один и тот же session-файл
+    (TELEGRAM_SESSION_NAME), а Telethon не поддерживает параллельное
+    подключение двух клиентов к одному session-файлу одновременно —
+    вторая попытка падает с ``sqlite3.OperationalError: database is
+    locked``. Поэтому клиент строится и стартует один раз и переиспользуется.
+    """
+    if "client" not in cache:
+        from news_aggregator.sources.telegram_client import build_telegram_client
+
+        client = build_telegram_client(secrets)
+        await client.start()
+        cache["client"] = client
+    return cache["client"]
+
+
+async def _build_readers(
+    registry: ComponentRegistry, telegram_client_cache: dict[str, TelegramClient]
+) -> list[ISourceReader]:
     """Строит все доступные ридеры, независимо от того, какие источники
     сейчас в списке — список источников теперь динамический (см.
     ISourceRepository), канал может быть добавлен позже через бота, и
@@ -102,35 +126,37 @@ def _build_readers(registry: ComponentRegistry) -> list[ISourceReader]:
         )
         return readers
 
-    from news_aggregator.sources.telegram_client import build_telegram_client
-
-    client = build_telegram_client(secrets)
+    client = await _get_shared_telegram_client(secrets, telegram_client_cache)
     readers.append(registry.sources.create("telegram", client=client))  # type: ignore[arg-type]
     return readers
 
 
-def _build_publishers(registry: ComponentRegistry, config: AppConfig) -> list[IPublisher]:
+async def _build_publishers(
+    registry: ComponentRegistry, config: AppConfig, telegram_client_cache: dict[str, TelegramClient]
+) -> list[IPublisher]:
     publishers: list[IPublisher] = []
     for c in config.publishers:
         if c.name == "telegram_publisher":
-            publishers.append(_build_telegram_publisher(registry, c))
+            publishers.append(await _build_telegram_publisher(registry, c, telegram_client_cache))
         else:
             publishers.append(registry.publishers.create(c.name, **c.params))  # type: ignore[arg-type]
     return publishers
 
 
-def _build_telegram_publisher(
-    registry: ComponentRegistry, component_config: ComponentConfig
+async def _build_telegram_publisher(
+    registry: ComponentRegistry,
+    component_config: ComponentConfig,
+    telegram_client_cache: dict[str, TelegramClient],
 ) -> IPublisher:
     try:
-        from news_aggregator.sources.telegram_client import build_telegram_client
+        from news_aggregator.sources.telegram_client import build_telegram_client  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "В конфигурации указан publisher 'telegram_publisher', но пакет telethon не установлен."
         ) from exc
 
     secrets = load_env_secrets()
-    client = build_telegram_client(secrets)
+    client = await _get_shared_telegram_client(secrets, telegram_client_cache)
     target_channel = component_config.params.get("target_channel") or secrets.target_channel
     if not target_channel:
         raise RuntimeError(
@@ -193,8 +219,9 @@ async def build_pipeline(
         registry.enrichers.create(c.name, **c.params)  # type: ignore[misc]
         for c in config.enrichers
     ]
-    publishers = _build_publishers(registry, config)
-    readers = _build_readers(registry)
+    telegram_client_cache: dict[str, TelegramClient] = {}
+    publishers = await _build_publishers(registry, config, telegram_client_cache)
+    readers = await _build_readers(registry, telegram_client_cache)
 
     source_repository: ISourceRepository = registry.source_repositories.create(  # type: ignore[assignment]
         "sqlite", db_path=_shared_sqlite_db_path(config)
