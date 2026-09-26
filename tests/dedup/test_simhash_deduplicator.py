@@ -145,5 +145,30 @@ def test_non_positive_lookback_hours_raises() -> None:
         SimHashDeduplicator(InMemorySimhashIndex(), lookback_hours=0)
 
 
+def test_invalid_unit_raises() -> None:
+    with pytest.raises(ValueError):
+        SimHashDeduplicator(InMemorySimhashIndex(), unit="sentence")  # type: ignore[arg-type]
+
+
+async def test_word_unit_still_catches_near_verbatim_repost() -> None:
+    index = InMemorySimhashIndex()
+    dedup = SimHashDeduplicator(index, max_hamming_distance=10, lookback_hours=12, unit="word")
+    await dedup.remember(
+        _make_message(
+            "Центробанк повысил ключевую ставку до 18 процентов сегодня утром на заседании",
+            external_id="1",
+        )
+    )
+
+    result = await dedup.check(
+        _make_message(
+            "Центробанк повысил ключевую ставку до 18 процентов сегодня утром на заседании (РБК)",
+            external_id="2",
+        )
+    )
+
+    assert result.is_duplicate is True
+
+
 def test_name_property() -> None:
     assert SimHashDeduplicator(InMemorySimhashIndex()).name == "simhash_deduplicator"

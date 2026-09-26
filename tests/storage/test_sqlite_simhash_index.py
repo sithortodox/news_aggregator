@@ -66,3 +66,31 @@ async def test_data_survives_reopen(tmp_path: Path) -> None:
     since = datetime.now(UTC) - timedelta(hours=1)
     assert await index2.find_recent(since) == [42]
     await index2.close()
+
+
+async def test_custom_table_name_isolates_entries(tmp_path: Path) -> None:
+    """Два индекса с разными table_name на одной базе не должны видеть
+    записи друг друга — иначе смешаются несравнимые char- и word-отпечатки
+    (см. docstring SqliteSimhashIndex)."""
+    db_path = tmp_path / "shared.db"
+    index_a = SqliteSimhashIndex(db_path=str(db_path), table_name="simhash_a")
+    index_b = SqliteSimhashIndex(db_path=str(db_path), table_name="simhash_b")
+
+    await index_a.save(111, source_id="s1", external_id="1")
+
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert await index_a.find_recent(since) == [111]
+    assert await index_b.find_recent(since) == []
+
+    await index_a.close()
+    await index_b.close()
+
+
+def test_invalid_table_name_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        SqliteSimhashIndex(db_path=str(tmp_path / "x.db"), table_name="1invalid")
+
+
+def test_table_name_with_sql_injection_attempt_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        SqliteSimhashIndex(db_path=str(tmp_path / "x.db"), table_name="ok_name; DROP TABLE x; --")

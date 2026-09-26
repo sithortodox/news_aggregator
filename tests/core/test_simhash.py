@@ -88,3 +88,40 @@ def test_different_shingle_sizes_still_deterministic() -> None:
         h1 = compute_simhash(text, shingle_size=size)
         h2 = compute_simhash(text, shingle_size=size)
         assert h1 == h2
+
+
+def test_word_unit_is_deterministic() -> None:
+    text = normalize_text("привет мир как дела сегодня")
+    assert compute_simhash(text, unit="word") == compute_simhash(text, unit="word")
+
+
+def test_word_unit_empty_text_is_zero() -> None:
+    assert compute_simhash("", unit="word") == 0
+
+
+def test_word_unit_handles_text_shorter_than_shingle_size() -> None:
+    result = compute_simhash("одно слово", shingle_size=5, unit="word")
+    assert isinstance(result, int)
+
+
+def test_word_unit_differs_from_char_unit_for_same_text() -> None:
+    """char и word — разные алгоритмы, отпечатки для одного текста не
+    обязаны (и в общем случае не будут) совпадать."""
+    text = normalize_text("привет как у тебя сегодня дела дружище")
+    char_hash = compute_simhash(text, unit="char")
+    word_hash = compute_simhash(text, unit="word")
+    assert char_hash != word_hash
+
+
+def test_word_unit_near_verbatim_repost_has_small_distance() -> None:
+    """word-режим по-прежнему должен ловить почти-дословные повторы —
+    основное назначение SimHash независимо от unit."""
+    a = normalize_text(
+        "Центробанк повысил ключевую ставку до 18 процентов сегодня утром на заседании"
+    )
+    b = normalize_text(
+        "Центробанк повысил ключевую ставку до 18 процентов сегодня утром на заседании (РБК)"
+    )
+    hash_a = compute_simhash(a, unit="word", shingle_size=2)
+    hash_b = compute_simhash(b, unit="word", shingle_size=2)
+    assert hamming_distance(hash_a, hash_b) <= 10

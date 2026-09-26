@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 from news_aggregator.core.interfaces import IDeduplicator, ISimhashIndex
 from news_aggregator.core.models import DeduplicationResult, ProcessedMessage
-from news_aggregator.core.simhash import compute_simhash, hamming_distance
+from news_aggregator.core.simhash import SimhashUnit, compute_simhash, hamming_distance
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +42,19 @@ class SimHashDeduplicator(IDeduplicator):
         max_hamming_distance: int = 4,
         lookback_hours: float = 12.0,
         shingle_size: int = 3,
+        unit: SimhashUnit = "char",
     ) -> None:
         if max_hamming_distance < 0:
             raise ValueError("max_hamming_distance не может быть отрицательным")
         if lookback_hours <= 0:
             raise ValueError("lookback_hours должен быть положительным")
+        if unit not in ("char", "word"):
+            raise ValueError(f"unit должен быть 'char' или 'word', получено: {unit!r}")
         self._index = index
         self._max_hamming_distance = max_hamming_distance
         self._lookback_hours = lookback_hours
         self._shingle_size = shingle_size
+        self._unit = unit
 
     @property
     def name(self) -> str:
@@ -63,7 +67,9 @@ class SimHashDeduplicator(IDeduplicator):
         if not message.normalized_text:
             return DeduplicationResult(is_duplicate=False, reason="пустой текст, нечего сравнивать")
 
-        simhash = compute_simhash(message.normalized_text, shingle_size=self._shingle_size)
+        simhash = compute_simhash(
+            message.normalized_text, shingle_size=self._shingle_size, unit=self._unit
+        )
         candidates = await self._index.find_recent(self._since())
 
         best_distance: int | None = None
@@ -90,7 +96,9 @@ class SimHashDeduplicator(IDeduplicator):
     async def remember(self, message: ProcessedMessage) -> None:
         if not message.normalized_text:
             return
-        simhash = compute_simhash(message.normalized_text, shingle_size=self._shingle_size)
+        simhash = compute_simhash(
+            message.normalized_text, shingle_size=self._shingle_size, unit=self._unit
+        )
         await self._index.save(
             simhash, source_id=message.raw.source_id, external_id=message.raw.external_id
         )

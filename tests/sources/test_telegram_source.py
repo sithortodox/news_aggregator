@@ -24,6 +24,7 @@ class _FakeTgMessage:
         media: object | None = None,
         photo: object | None = None,
         document: object | None = None,
+        entities: list[object] | None = None,
     ) -> None:
         self.id = id
         self.message = message
@@ -31,6 +32,7 @@ class _FakeTgMessage:
         self.media = media
         self.photo = photo
         self.document = document
+        self.entities = entities
 
 
 class _FakeTelethonClient:
@@ -238,3 +240,37 @@ async def test_reads_only_messages_after_cursor() -> None:
 
     assert [r.external_id for r in results] == ["2", "3"]
     assert client.iter_calls == [(1, True)]
+
+
+async def test_captures_source_display_name() -> None:
+    now = datetime.now(tz=UTC)
+    client = _FakeTelethonClient([_FakeTgMessage(1, "Текст", now)])
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), "0")]
+
+    assert results[0].source_display_name == "Ch1"
+
+
+async def test_captures_formatting_entities_for_hyperlinked_text() -> None:
+    """Ссылка, оформленная как гиперссылка на слове (MessageEntityTextUrl),
+    не попадает в текст сообщения как есть — без entities она была бы
+    потеряна при публикации. Ридер обязан пронести entities как есть."""
+    now = datetime.now(tz=UTC)
+    fake_entity = SimpleNamespace(offset=0, length=9, url="https://example.com/news")
+    client = _FakeTelethonClient([_FakeTgMessage(1, "Подробнее", now, entities=[fake_entity])])
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), "0")]
+
+    assert results[0].formatting_entities == (fake_entity,)
+
+
+async def test_no_entities_gives_empty_tuple() -> None:
+    now = datetime.now(tz=UTC)
+    client = _FakeTelethonClient([_FakeTgMessage(1, "Просто текст", now, entities=None)])
+    reader = TelegramSourceReader(client)
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), "0")]
+
+    assert results[0].formatting_entities == ()

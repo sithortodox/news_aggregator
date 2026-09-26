@@ -171,6 +171,38 @@ class ISimhashIndex(ABC):
         """Освобождает ресурсы хранилища (соединения и т.п.)."""
 
 
+class ILemmaSetIndex(ABC):
+    """Хранилище множеств лемм недавних сообщений для поиска пересказов.
+
+    В отличие от ISimhashIndex (сравнение по расстоянию Хэмминга между
+    числами-отпечатками), здесь единица сравнения — множество строк (лемм),
+    а метрика похожести — коэффициент Жаккара (см.
+    news_aggregator.core.lemmatize.jaccard_similarity). Нужен отдельный
+    интерфейс, поскольку форма данных и запроса другая: не число, а
+    множество строк на каждое сообщение.
+
+    Как и у ISimhashIndex, реализация обязана сама ограничивать объём
+    хранимых данных (purge_older_than вызывается при каждом remember()
+    дедупликатором).
+    """
+
+    @abstractmethod
+    async def find_recent(self, since: datetime) -> list[frozenset[str]]:
+        """Возвращает множества лемм всех сообщений, сохранённых с since."""
+
+    @abstractmethod
+    async def save(self, lemmas: frozenset[str], source_id: str, external_id: str) -> None:
+        """Сохраняет множество лемм сообщения с текущей меткой времени."""
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        """Удаляет записи старше cutoff. Возвращает число удалённых записей."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Освобождает ресурсы хранилища (соединения и т.п.)."""
+
+
 class ISourceRepository(ABC):
     """Хранилище списка источников (каналов/групп), управляемого динамически.
 

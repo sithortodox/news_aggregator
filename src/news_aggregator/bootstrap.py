@@ -17,11 +17,13 @@ import logging
 from news_aggregator.core.registry import ComponentRegistry
 from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.dedup.link_deduplicator import LinkDeduplicator
+from news_aggregator.dedup.paraphrase_deduplicator import ParaphraseDeduplicator
 from news_aggregator.dedup.simhash_deduplicator import SimHashDeduplicator
 from news_aggregator.filters.ad_filter import AdFilter
 from news_aggregator.filters.length_filter import LengthFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
+from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
 from news_aggregator.storage.sqlite_simhash_index import SqliteSimhashIndex
 from news_aggregator.storage.sqlite_source_repository import SqliteSourceRepository
 from news_aggregator.storage.sqlite_storage import SqliteStorage
@@ -37,12 +39,13 @@ def build_registry() -> ComponentRegistry:
     registry.filters.register("length_filter", LengthFilter)
     registry.filters.register("ad_filter", AdFilter)
 
-    # Дедупликаторы. text_hash/link принимают storage, simhash_deduplicator —
-    # index (свой отдельный SimHash-индекс) - подстановка происходит в
-    # main.py._build_deduplicators.
+    # Дедупликаторы. text_hash/link принимают storage, simhash_deduplicator и
+    # paraphrase_deduplicator — index (свой отдельный индекс) - подстановка
+    # происходит в main.py._build_deduplicators.
     registry.deduplicators.register("text_hash_deduplicator", TextHashDeduplicator)
     registry.deduplicators.register("link_deduplicator", LinkDeduplicator)
     registry.deduplicators.register("simhash_deduplicator", SimHashDeduplicator)
+    registry.deduplicators.register("paraphrase_deduplicator", ParaphraseDeduplicator)
 
     # Обогатители: пока нет ни одного встроенного (Stage вне рамок MVP),
     # но категория уже готова к расширению без изменения пайплайна.
@@ -63,6 +66,10 @@ def build_registry() -> ComponentRegistry:
     # Индекс SimHash-отпечатков для simhash_deduplicator (отдельная таблица
     # той же SQLite-базы, см. storage/sqlite_simhash_index.py)
     registry.simhash_indexes.register("sqlite", SqliteSimhashIndex)
+
+    # Индекс множеств лемм для paraphrase_deduplicator (см.
+    # storage/sqlite_lemma_index.py)
+    registry.lemma_indexes.register("sqlite", SqliteLemmaIndex)
 
     _try_register_telegram(registry)
 

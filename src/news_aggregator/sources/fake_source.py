@@ -50,4 +50,5 @@ class FakeSourceReader(ISourceReader):
                 text=text,
                 posted_at=base_time - timedelta(minutes=len(_DEMO_TEXTS) - index),
                 fetched_at=base_time,
+                source_display_name=source.display_name,
             )

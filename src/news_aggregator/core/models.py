@@ -74,6 +74,16 @@ class RawMessage:
         posted_at: Время публикации сообщения в источнике.
         fetched_at: Время получения сообщения агрегатором.
         media: Вложенный медиафайл (фото/документ), если есть, иначе None.
+        formatting_entities: Непрозрачные объекты форматирования текста
+            (жирный, курсив, ссылки-гиперссылки и т.п.), специфичные для
+            адаптера-источника — как и MediaAttachment.native_ref, ядро их
+            не интерпретирует. Нужны в первую очередь для ссылок,
+            оформленных как гиперссылка на слове/фразе (а не вставленных в
+            текст как есть): такая ссылка не попадает в сам text и без
+            entities была бы потеряна при публикации.
+        source_display_name: Человекочитаемое имя источника (см.
+            Source.display_name) на момент чтения сообщения — используется
+            publisher'ом для подписи "откуда пост".
     """
 
     source_id: str
@@ -82,6 +92,8 @@ class RawMessage:
     posted_at: datetime
     fetched_at: datetime
     media: MediaAttachment | None = None
+    formatting_entities: tuple[object, ...] = ()
+    source_display_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)

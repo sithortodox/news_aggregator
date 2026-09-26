@@ -98,4 +98,6 @@ class TelegramSourceReader(ISourceReader):
                 posted_at=posted_at,
                 fetched_at=fetched_at,
                 media=media,
+                formatting_entities=tuple(getattr(tg_message, "entities", None) or ()),
+                source_display_name=source.display_name,
             )

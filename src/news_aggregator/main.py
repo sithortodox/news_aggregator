@@ -30,6 +30,7 @@ from news_aggregator.core.interfaces import (
     IDeduplicator,
     IEnricher,
     IFilter,
+    ILemmaSetIndex,
     IPublisher,
     ISimhashIndex,
     ISourceReader,
@@ -70,12 +71,39 @@ def _build_deduplicators(
     registry: ComponentRegistry,
     config: AppConfig,
     storage: IStorage,
-    simhash_index: ISimhashIndex,
+    shared_db_path: str,
 ) -> list[IDeduplicator]:
     deduplicators: list[IDeduplicator] = []
+    # char- и word-режимы SimHash дают несравнимые отпечатки для одного и
+    # того же текста, поэтому каждому уникальному index_name — своя таблица
+    # (см. docstring SqliteSimhashIndex). Кэш нужен, чтобы два
+    # simhash_deduplicator с одинаковым index_name делили один и тот же
+    # индекс/соединение, а не открывали второе к той же таблице. У
+    # paraphrase_deduplicator (индекс лемм) — свой отдельный кэш по той же
+    # логике, но своя таблица по умолчанию (seen_lemma_sets).
+    simhash_index_cache: dict[str, ISimhashIndex] = {}
+    lemma_index_cache: dict[str, ILemmaSetIndex] = {}
     for c in config.deduplicators:
         if c.name == "simhash_deduplicator":
-            created = registry.deduplicators.create(c.name, index=simhash_index, **c.params)
+            params = dict(c.params)
+            index_name = str(params.pop("index_name", "seen_simhashes"))
+            if index_name not in simhash_index_cache:
+                simhash_index_cache[index_name] = registry.simhash_indexes.create(  # type: ignore[assignment]
+                    "sqlite", db_path=shared_db_path, table_name=index_name
+                )
+            created = registry.deduplicators.create(
+                c.name, index=simhash_index_cache[index_name], **params
+            )
+        elif c.name == "paraphrase_deduplicator":
+            params = dict(c.params)
+            index_name = str(params.pop("index_name", "seen_lemma_sets"))
+            if index_name not in lemma_index_cache:
+                lemma_index_cache[index_name] = registry.lemma_indexes.create(  # type: ignore[assignment]
+                    "sqlite", db_path=shared_db_path, table_name=index_name
+                )
+            created = registry.deduplicators.create(
+                c.name, index=lemma_index_cache[index_name], **params
+            )
         else:
             created = registry.deduplicators.create(c.name, storage=storage, **c.params)
         deduplicators.append(cast(IDeduplicator, created))
@@ -211,10 +239,7 @@ async def build_pipeline(
     """
     storage = _build_storage(registry, config)
     filters = _build_filters(registry, config)
-    simhash_index: ISimhashIndex = registry.simhash_indexes.create(  # type: ignore[assignment]
-        "sqlite", db_path=_shared_sqlite_db_path(config)
-    )
-    deduplicators = _build_deduplicators(registry, config, storage, simhash_index)
+    deduplicators = _build_deduplicators(registry, config, storage, _shared_sqlite_db_path(config))
     enrichers: list[IEnricher] = [
         registry.enrichers.create(c.name, **c.params)  # type: ignore[misc]
         for c in config.enrichers

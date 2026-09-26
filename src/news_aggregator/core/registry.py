@@ -73,3 +73,4 @@ class ComponentRegistry:
         self.storages: TypedRegistry[object] = TypedRegistry("storages")
         self.source_repositories: TypedRegistry[object] = TypedRegistry("source_repositories")
         self.simhash_indexes: TypedRegistry[object] = TypedRegistry("simhash_indexes")
+        self.lemma_indexes: TypedRegistry[object] = TypedRegistry("lemma_indexes")

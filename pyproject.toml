@@ -8,6 +8,8 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
+    "pymorphy3>=1.2",
+    "pymorphy3-dicts-ru>=2.4",
 ]
 
 [project.optional-dependencies]
