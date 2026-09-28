@@ -24,12 +24,15 @@ import logging
 import os
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("news_aggregator.maintenance")
 
 DEFAULT_KEEP = 7
+# Дедупликация смотрит на окно ~12 ч, так что копии старше суток бесполезны.
+DEFAULT_MAX_AGE_HOURS = 24.0
+_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 _BUSY_TIMEOUT_SECONDS = 60.0
 
 
@@ -54,17 +57,29 @@ def _check_integrity(db_path: Path) -> None:
 
 
 def backup_database(
-    db_path: Path, backup_dir: Path, *, keep: int = DEFAULT_KEEP, now: datetime | None = None
+    db_path: Path,
+    backup_dir: Path,
+    *,
+    keep: int = DEFAULT_KEEP,
+    max_age_hours: float | None = None,
+    now: datetime | None = None,
 ) -> Path:
-    """Создаёт сжатую копию БД в backup_dir и оставляет последние `keep` копий.
+    """Создаёт сжатую копию БД в backup_dir и чистит старые копии.
+
+    После успешного создания удаляются копии, вышедшие за лимит `keep`, и
+    (если задан `max_age_hours`) копии старше этого возраста. Самая свежая
+    копия не удаляется никогда.
 
     Returns:
         Путь к созданному файлу бэкапа.
     """
     if keep < 1:
         raise ValueError("keep должен быть >= 1")
+    if max_age_hours is not None and max_age_hours <= 0:
+        raise ValueError("max_age_hours должен быть положительным")
 
-    timestamp = (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
+    moment = now or datetime.now(UTC)
+    timestamp = moment.strftime(_TIMESTAMP_FORMAT)
     backup_dir.mkdir(parents=True, exist_ok=True)
     final_path = backup_dir / f"{db_path.stem}-{timestamp}.db"
     tmp_path = final_path.with_name(final_path.name + ".tmp")
@@ -89,7 +104,9 @@ def backup_database(
         raise
 
     os.replace(tmp_path, final_path)
-    removed = rotate_backups(backup_dir, db_path.stem, keep=keep)
+    removed = rotate_backups(
+        backup_dir, db_path.stem, keep=keep, max_age_hours=max_age_hours, now=moment
+    )
     logger.info(
         "Бэкап создан: %s (%d КБ), удалено старых копий: %d",
         final_path,
@@ -99,16 +116,55 @@ def backup_database(
     return final_path
 
 
-def rotate_backups(backup_dir: Path, prefix: str, *, keep: int = DEFAULT_KEEP) -> list[Path]:
-    """Удаляет все копии `<prefix>-*.db`, кроме `keep` самых новых.
+def _backup_time(path: Path, prefix: str) -> datetime | None:
+    """Время создания копии из имени `<prefix>-YYYYmmdd-HHMMSS.db` (UTC) или None."""
+    stem = path.name.removeprefix(f"{prefix}-").removesuffix(".db")
+    try:
+        return datetime.strptime(stem, _TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
-    Имена содержат UTC-метку времени, поэтому лексикографический порядок
-    совпадает с хронологическим. Временные `.tmp` файлы не затрагиваются.
+
+def rotate_backups(
+    backup_dir: Path,
+    prefix: str,
+    *,
+    keep: int = DEFAULT_KEEP,
+    max_age_hours: float | None = None,
+    now: datetime | None = None,
+) -> list[Path]:
+    """Удаляет лишние копии `<prefix>-<время>.db`.
+
+    Удаляется копия, если она не входит в `keep` самых новых ИЛИ (при заданном
+    `max_age_hours`) строго старше этого возраста. Самая свежая копия не
+    удаляется никогда — даже если она старше лимита, иначе при сломавшемся
+    cron можно остаться вообще без бэкапов.
+
+    Возраст считается по метке времени в имени файла (UTC), а не по mtime:
+    mtime меняется при копировании/rsync. Файлы, чьи имена не соответствуют
+    формату (в том числе `.tmp`), не затрагиваются.
     """
     if keep < 1:
         raise ValueError("keep должен быть >= 1")
-    backups = sorted(backup_dir.glob(f"{prefix}-*.db"))
-    to_remove = backups[:-keep] if len(backups) > keep else []
+    if max_age_hours is not None and max_age_hours <= 0:
+        raise ValueError("max_age_hours должен быть положительным")
+
+    current = now or datetime.now(UTC)
+    dated = sorted(
+        (created, path)
+        for path in backup_dir.glob(f"{prefix}-*.db")
+        if (created := _backup_time(path, prefix)) is not None
+    )
+    if not dated:
+        return []
+
+    newest = dated[-1][1]
+    to_remove: list[Path] = []
+    for index, (created, path) in enumerate(dated):
+        too_many = len(dated) - index > keep
+        too_old = max_age_hours is not None and current - created > timedelta(hours=max_age_hours)
+        if path != newest and (too_many or too_old):
+            to_remove.append(path)
     for path in to_remove:
         path.unlink()
     return to_remove
@@ -164,7 +220,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--dir", default=None, help="Каталог бэкапов (по умолчанию <каталог БД>/backups)"
     )
     backup.add_argument(
-        "--keep", type=int, default=DEFAULT_KEEP, help="Сколько последних копий хранить"
+        "--keep", type=int, default=DEFAULT_KEEP, help="Сколько последних копий хранить (максимум)"
+    )
+    backup.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=DEFAULT_MAX_AGE_HOURS,
+        help="Удалять копии старше N часов (по умолчанию 24; 0 — не удалять по возрасту). "
+        "Самая свежая копия не удаляется никогда",
     )
 
     sub.add_parser("vacuum", help="Сжать БД на месте (вернуть место после удалений)")
@@ -178,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         db_path = _resolve_db_path(args)
         if args.command == "backup":
             backup_dir = Path(args.dir) if args.dir else db_path.parent / "backups"
-            path = backup_database(db_path, backup_dir, keep=args.keep)
+            max_age = args.max_age_hours if args.max_age_hours > 0 else None
+            path = backup_database(db_path, backup_dir, keep=args.keep, max_age_hours=max_age)
             print(path)
         else:
             vacuum_database(db_path)

@@ -655,29 +655,42 @@ SQLite-базе `data/state.db`. Для неё есть модуль `news_aggre
 
 ```bash
 # консистентная сжатая копия «на лету» (контейнер останавливать не нужно)
-docker compose exec -T news-aggregator python -m news_aggregator.maintenance backup --keep 7
-# вернуть место на диске после удаления старых записей дедупликации
+docker compose exec -T news-aggregator python -m news_aggregator.maintenance backup
+# вернуть место на диске после массового удаления записей (обычно не нужно)
 docker compose exec -T news-aggregator python -m news_aggregator.maintenance vacuum
 ```
 
-Копии кладутся в `data/backups/state-<UTC-время>.db`, хранятся последние
-`--keep` штук. Копия проверяется через `PRAGMA integrity_check` и
-переименовывается в итоговое имя только после успеха — недописанный
-бэкап не выглядит готовым. Без Docker — то же самое через
-`python -m news_aggregator.maintenance ...`.
+Копии кладутся в `data/backups/state-<UTC-время>.db`. Копия проверяется
+через `PRAGMA integrity_check` и переименовывается в итоговое имя только
+после успеха — недописанный бэкап не выглядит готовым. Без Docker — то же
+самое через `python -m news_aggregator.maintenance ...`.
+
+**Ротация.** После каждого успешного бэкапа удаляются копии старше
+`--max-age-hours` (по умолчанию **24 часа**: окна дедупликации — 12 ч и
+меньше, так что более старые копии не нужны) и копии сверх лимита `--keep`
+(по умолчанию 7). Возраст считается по метке времени в имени файла, а не
+по `mtime`. **Самая свежая копия не удаляется никогда** — даже если она
+старше лимита, поэтому при сломавшемся cron вы не останетесь вообще без
+бэкапа. Файлы с другими именами в `data/backups` не трогаются.
+
+Так как хранится ~сутки, делайте бэкап **чаще раза в сутки** — например,
+каждые 6 часов: тогда всегда есть 4–5 точек восстановления, а потеря при
+сбое — не более 6 часов данных. При 13 МБ на копию это ~65 МБ.
 
 Бэкап на том же диске защищает от порчи БД, но **не от потери VPS**.
 Скрипт `deploy/backup.sh` делает бэкап и, если задан `BACKUP_REMOTE`,
 копирует его за пределы сервера через [rclone](https://rclone.org)
-(Google Drive, S3, SFTP и др.), удаляя там копии старше 30 дней:
+(Google Drive, S3, SFTP и др.), удаляя там копии старше `BACKUP_REMOTE_MAX_AGE`
+(по умолчанию 24 часа, формат rclone: `24h`, `7d`). Переменные скрипта:
+`BACKUP_MAX_AGE_HOURS`, `BACKUP_KEEP`, `BACKUP_REMOTE`, `BACKUP_REMOTE_MAX_AGE`.
 
 ```bash
 crontab -e
-# ежедневно в 03:17; вывод — в syslog, а не в растущий файл
-17 3 * * * BACKUP_REMOTE=gdrive:news-aggregator-backups /home/deploy/news_aggregator/deploy/backup.sh 2>&1 | logger -t news-aggregator-backup
-# раз в неделю — сжатие БД (нужно свободное место примерно на размер БД)
-30 4 * * 0 cd /home/deploy/news_aggregator && docker compose exec -T news-aggregator python -m news_aggregator.maintenance vacuum 2>&1 | logger -t news-aggregator-vacuum
+# каждые 6 часов; вывод — в syslog, а не в растущий файл
+17 */6 * * * BACKUP_REMOTE=gdrive:news-aggregator-backups /home/deploy/news_aggregator/deploy/backup.sh 2>&1 | logger -t news-aggregator-backup
 ```
+
+Без вывоза за пределы сервера уберите `BACKUP_REMOTE=...` из строки.
 
 **Восстановление из копии:**
 
@@ -688,11 +701,13 @@ rm -f data/state.db-wal data/state.db-shm   # иначе старый WAL при
 docker compose up -d
 ```
 
-Что и почему очищается само: `simhash_deduplicator` и
-`paraphrase_deduplicator` удаляют записи старше своего `lookback_hours` при
-каждом сохранении, поэтому не растут. Таблицы точных совпадений
-(`seen_hashes`, `seen_links`) растут бессрочно — осознанно: это короткие
-строки, а репост старой новости через месяц тоже стоит поймать.
+Что и почему растёт: `simhash_deduplicator` и `paraphrase_deduplicator`
+удаляют записи старше своего `lookback_hours` при каждом сохранении, поэтому
+не растут. Таблицы точных совпадений (`seen_hashes`, `seen_links`) растут
+бессрочно — осознанно: это короткие строки (~190 байт), а репост старой
+новости через месяц тоже стоит поймать. В штатном режиме это десятки строк
+в сутки (единоразовый всплеск возможен при первом подключении старого
+канала, когда читается его недавняя история).
 
 Файл сессии Telethon (`data/*.session`) в бэкап БД **не входит** — это
 секрет авторизации, и отправлять его в облако без шифрования не стоит.

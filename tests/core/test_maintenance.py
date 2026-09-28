@@ -145,3 +145,107 @@ def test_cli_default_backup_dir_is_next_to_db(tmp_path: Path) -> None:
     assert main(["--db", str(db), "backup"]) == 0
 
     assert len(list((tmp_path / "backups").glob("state-*.db"))) == 1
+
+
+def _touch_backup(directory: Path, moment: datetime, prefix: str = "state") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}-{moment.strftime('%Y%m%d-%H%M%S')}.db"
+    path.write_text("x")
+    return path
+
+
+def test_rotation_removes_backups_older_than_max_age(tmp_path: Path) -> None:
+    now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+    backups = tmp_path / "backups"
+    old = _touch_backup(backups, now - timedelta(hours=30))
+    borderline_ok = _touch_backup(backups, now - timedelta(hours=23, minutes=59))
+    fresh = _touch_backup(backups, now - timedelta(hours=1))
+
+    removed = rotate_backups(backups, "state", keep=10, max_age_hours=24, now=now)
+
+    assert removed == [old]
+    assert borderline_ok.exists() and fresh.exists()
+
+
+def test_rotation_keeps_backup_exactly_at_max_age(tmp_path: Path) -> None:
+    """Возраст ровно 24 ч — ещё не «старше 24 ч»."""
+    now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+    backups = tmp_path / "backups"
+    exact = _touch_backup(backups, now - timedelta(hours=24))
+    _touch_backup(backups, now - timedelta(hours=1))
+
+    assert rotate_backups(backups, "state", keep=10, max_age_hours=24, now=now) == []
+    assert exact.exists()
+
+
+def test_rotation_never_removes_newest_even_if_too_old(tmp_path: Path) -> None:
+    """Cron не работал несколько дней: единственная копия нужна, хоть и старая."""
+    now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+    backups = tmp_path / "backups"
+    stale_1 = _touch_backup(backups, now - timedelta(days=5))
+    stale_2 = _touch_backup(backups, now - timedelta(days=3))
+
+    removed = rotate_backups(backups, "state", keep=10, max_age_hours=24, now=now)
+
+    assert removed == [stale_1]
+    assert stale_2.exists()
+
+
+def test_rotation_by_age_ignores_files_with_unparseable_names(tmp_path: Path) -> None:
+    now = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+    backups = tmp_path / "backups"
+    _touch_backup(backups, now - timedelta(days=9))
+    _touch_backup(backups, now - timedelta(hours=1))
+    foreign = backups / "state-manual-copy.db"
+    foreign.write_text("mine")
+
+    rotate_backups(backups, "state", keep=10, max_age_hours=24, now=now)
+
+    assert foreign.exists()
+
+
+def test_rotation_on_empty_or_missing_dir_returns_nothing(tmp_path: Path) -> None:
+    assert rotate_backups(tmp_path / "missing", "state", max_age_hours=24) == []
+
+
+def test_invalid_max_age_raises(tmp_path: Path) -> None:
+    db = _make_db(tmp_path / "state.db")
+    with pytest.raises(ValueError):
+        backup_database(db, tmp_path / "backups", max_age_hours=0)
+    with pytest.raises(ValueError):
+        rotate_backups(tmp_path, "state", max_age_hours=-1)
+
+
+def test_backup_database_applies_age_rotation(tmp_path: Path) -> None:
+    db = _make_db(tmp_path / "state.db")
+    start = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    for hours in (0, 10, 30):
+        backup_database(
+            db, tmp_path / "backups", keep=10, max_age_hours=24, now=start + timedelta(hours=hours)
+        )
+
+    names = sorted(p.name for p in (tmp_path / "backups").glob("state-*.db"))
+
+    # к моменту третьего бэкапа (+30 ч) копия «+0 ч» старше суток, «+10 ч» — нет
+    assert names == ["state-20260101-100000.db", "state-20260102-060000.db"]
+
+
+def test_cli_default_max_age_is_24_hours(tmp_path: Path) -> None:
+    db = _make_db(tmp_path / "state.db")
+    backups = tmp_path / "backups"
+    ancient = _touch_backup(backups, datetime(2020, 1, 1, tzinfo=UTC))
+
+    assert main(["--db", str(db), "backup"]) == 0
+
+    assert not ancient.exists()
+    assert len(list(backups.glob("state-*.db"))) == 1
+
+
+def test_cli_max_age_zero_disables_age_rotation(tmp_path: Path) -> None:
+    db = _make_db(tmp_path / "state.db")
+    backups = tmp_path / "backups"
+    ancient = _touch_backup(backups, datetime(2020, 1, 1, tzinfo=UTC))
+
+    assert main(["--db", str(db), "backup", "--max-age-hours", "0"]) == 0
+
+    assert ancient.exists()
