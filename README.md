@@ -648,14 +648,55 @@ sudo -u news-aggregator -H bash -c 'cd /opt/news_aggregator && git pull && .venv
 sudo systemctl restart news-aggregator
 ```
 
-### Резервное копирование состояния
+### Резервное копирование и обслуживание БД
 
-Всё состояние (курсоры источников, история хэшей/ссылок, файл сессии
-Telethon) лежит в одном месте: `data/` (Docker-вариант) или
-`/opt/news_aggregator/data` + `.session`-файл (systemd-вариант). Достаточно
-периодически копировать эту директорию, например через `cron` + `rsync`
-на другой хост — восстановление после сбоя VPS сводится к развёртыванию
-проекта заново и подстановке сохранённой `data/`.
+Состояние (курсоры, история дедупликации, список каналов) лежит в одной
+SQLite-базе `data/state.db`. Для неё есть модуль `news_aggregator.maintenance`:
+
+```bash
+# консистентная сжатая копия «на лету» (контейнер останавливать не нужно)
+docker compose exec -T news-aggregator python -m news_aggregator.maintenance backup --keep 7
+# вернуть место на диске после удаления старых записей дедупликации
+docker compose exec -T news-aggregator python -m news_aggregator.maintenance vacuum
+```
+
+Копии кладутся в `data/backups/state-<UTC-время>.db`, хранятся последние
+`--keep` штук. Копия проверяется через `PRAGMA integrity_check` и
+переименовывается в итоговое имя только после успеха — недописанный
+бэкап не выглядит готовым. Без Docker — то же самое через
+`python -m news_aggregator.maintenance ...`.
+
+Бэкап на том же диске защищает от порчи БД, но **не от потери VPS**.
+Скрипт `deploy/backup.sh` делает бэкап и, если задан `BACKUP_REMOTE`,
+копирует его за пределы сервера через [rclone](https://rclone.org)
+(Google Drive, S3, SFTP и др.), удаляя там копии старше 30 дней:
+
+```bash
+crontab -e
+# ежедневно в 03:17; вывод — в syslog, а не в растущий файл
+17 3 * * * BACKUP_REMOTE=gdrive:news-aggregator-backups /home/deploy/news_aggregator/deploy/backup.sh 2>&1 | logger -t news-aggregator-backup
+# раз в неделю — сжатие БД (нужно свободное место примерно на размер БД)
+30 4 * * 0 cd /home/deploy/news_aggregator && docker compose exec -T news-aggregator python -m news_aggregator.maintenance vacuum 2>&1 | logger -t news-aggregator-vacuum
+```
+
+**Восстановление из копии:**
+
+```bash
+docker compose stop
+cp data/backups/state-YYYYMMDD-HHMMSS.db data/state.db
+rm -f data/state.db-wal data/state.db-shm   # иначе старый WAL применится к восстановленному файлу
+docker compose up -d
+```
+
+Что и почему очищается само: `simhash_deduplicator` и
+`paraphrase_deduplicator` удаляют записи старше своего `lookback_hours` при
+каждом сохранении, поэтому не растут. Таблицы точных совпадений
+(`seen_hashes`, `seen_links`) растут бессрочно — осознанно: это короткие
+строки, а репост старой новости через месяц тоже стоит поймать.
+
+Файл сессии Telethon (`data/*.session`) в бэкап БД **не входит** — это
+секрет авторизации, и отправлять его в облако без шифрования не стоит.
+Если он потеряется, придётся один раз заново ввести код подтверждения.
 
 ## Валидация конфигурации перед деплоем
 
