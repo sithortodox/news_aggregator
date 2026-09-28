@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from typing import TYPE_CHECKING, cast
 
@@ -49,11 +50,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger("news_aggregator")
 
 
+# Токен Telegram-бота: <числовой id>:<35 символов base64url>.
+_BOT_TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Вырезает токены ботов из итоговой строки лога (сообщение, аргументы, трейсбек).
+
+    Bot API кладёт токен прямо в URL (`/bot<token>/getUpdates`), и он легко
+    попадает в логи HTTP-клиента или в текст исключения, а логи потом
+    копируют в чаты и тикеты.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _BOT_TOKEN_RE.sub("<redacted>", super().format(record))
+
+
 def _configure_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-    )
+    handler = logging.StreamHandler()
+    handler.setFormatter(_RedactingFormatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, handlers=[handler])
+    # httpx на INFO пишет каждый запрос вместе с URL (а в нём токен бота), и
+    # long polling бота даёт такую строку каждые ~10 секунд. Поэтому WARNING.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _build_storage(registry: ComponentRegistry, config: AppConfig) -> IStorage:
@@ -111,7 +131,7 @@ def _build_deduplicators(
 
 
 async def _get_shared_telegram_client(
-    secrets: TelegramSecrets, cache: dict[str, TelegramClient]
+    secrets: TelegramSecrets, cache: dict[str, TelegramClient], *, connect: bool = True
 ) -> TelegramClient:
     """Строит и запускает единственный TelegramClient на процесс.
 
@@ -120,18 +140,27 @@ async def _get_shared_telegram_client(
     подключение двух клиентов к одному session-файлу одновременно —
     вторая попытка падает с ``sqlite3.OperationalError: database is
     locked``. Поэтому клиент строится и стартует один раз и переиспользуется.
+
+    connect=False только собирает клиент (это проверяет секреты), но не
+    подключается к Telegram и не трогает session-файл — так работает
+    ``--validate-config``, который можно безопасно запускать рядом с уже
+    работающим контейнером.
     """
     if "client" not in cache:
         from news_aggregator.sources.telegram_client import build_telegram_client
 
         client = build_telegram_client(secrets)
-        await client.start()
+        if connect:
+            await client.start()
         cache["client"] = client
     return cache["client"]
 
 
 async def _build_readers(
-    registry: ComponentRegistry, telegram_client_cache: dict[str, TelegramClient]
+    registry: ComponentRegistry,
+    telegram_client_cache: dict[str, TelegramClient],
+    *,
+    connect: bool = True,
 ) -> list[ISourceReader]:
     """Строит все доступные ридеры, независимо от того, какие источники
     сейчас в списке — список источников теперь динамический (см.
@@ -154,18 +183,24 @@ async def _build_readers(
         )
         return readers
 
-    client = await _get_shared_telegram_client(secrets, telegram_client_cache)
+    client = await _get_shared_telegram_client(secrets, telegram_client_cache, connect=connect)
     readers.append(registry.sources.create("telegram", client=client))  # type: ignore[arg-type]
     return readers
 
 
 async def _build_publishers(
-    registry: ComponentRegistry, config: AppConfig, telegram_client_cache: dict[str, TelegramClient]
+    registry: ComponentRegistry,
+    config: AppConfig,
+    telegram_client_cache: dict[str, TelegramClient],
+    *,
+    connect: bool = True,
 ) -> list[IPublisher]:
     publishers: list[IPublisher] = []
     for c in config.publishers:
         if c.name == "telegram_publisher":
-            publishers.append(await _build_telegram_publisher(registry, c, telegram_client_cache))
+            publishers.append(
+                await _build_telegram_publisher(registry, c, telegram_client_cache, connect=connect)
+            )
         else:
             publishers.append(registry.publishers.create(c.name, **c.params))  # type: ignore[arg-type]
     return publishers
@@ -175,6 +210,8 @@ async def _build_telegram_publisher(
     registry: ComponentRegistry,
     component_config: ComponentConfig,
     telegram_client_cache: dict[str, TelegramClient],
+    *,
+    connect: bool = True,
 ) -> IPublisher:
     try:
         from news_aggregator.sources.telegram_client import build_telegram_client  # noqa: F401
@@ -184,7 +221,7 @@ async def _build_telegram_publisher(
         ) from exc
 
     secrets = load_env_secrets()
-    client = await _get_shared_telegram_client(secrets, telegram_client_cache)
+    client = await _get_shared_telegram_client(secrets, telegram_client_cache, connect=connect)
     target_channel = component_config.params.get("target_channel") or secrets.target_channel
     if not target_channel:
         raise RuntimeError(
@@ -228,9 +265,12 @@ async def _seed_sources_from_config(
 
 
 async def build_pipeline(
-    config: AppConfig, registry: ComponentRegistry
+    config: AppConfig, registry: ComponentRegistry, *, connect_telegram: bool = True
 ) -> tuple[AggregatorPipeline, ISourceRepository]:
     """Собирает AggregatorPipeline из конфигурации, используя реестр компонентов.
+
+    connect_telegram=False собирает Telegram-компоненты без подключения к
+    сети и без открытия session-файла (режим ``--validate-config``).
 
     Возвращает также ISourceRepository — тот же экземпляр, что использует
     пайплайн для получения списка источников на каждый прогон. main()
@@ -245,8 +285,10 @@ async def build_pipeline(
         for c in config.enrichers
     ]
     telegram_client_cache: dict[str, TelegramClient] = {}
-    publishers = await _build_publishers(registry, config, telegram_client_cache)
-    readers = await _build_readers(registry, telegram_client_cache)
+    publishers = await _build_publishers(
+        registry, config, telegram_client_cache, connect=connect_telegram
+    )
+    readers = await _build_readers(registry, telegram_client_cache, connect=connect_telegram)
 
     source_repository: ISourceRepository = registry.source_repositories.create(  # type: ignore[assignment]
         "sqlite", db_path=_shared_sqlite_db_path(config)
@@ -442,7 +484,9 @@ async def _async_main(argv: list[str] | None = None) -> int:
     registry = build_registry()
 
     try:
-        pipeline, source_repository = await build_pipeline(config, registry)
+        pipeline, source_repository = await build_pipeline(
+            config, registry, connect_telegram=not args.validate_config
+        )
     except (ComponentNotRegisteredError, RuntimeError) as exc:
         logger.error("Не удалось собрать пайплайн: %s", exc)
         return 1
