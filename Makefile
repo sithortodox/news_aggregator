@@ -62,7 +62,7 @@ docker-logs:
 	docker compose logs -f
 
 docker-run-once:
-	docker compose run --rm news-aggregator --config config/config.yaml --once
+	docker compose run --rm --build news-aggregator --config config/config.yaml --once
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

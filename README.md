@@ -497,7 +497,7 @@ cp .env.example .env
 docker compose build              # пересобрать образ после изменения кода   (make docker-build)
 docker compose logs -f            # следить за логами                        (make docker-logs)
 docker compose down                # остановить и удалить контейнер (volume-ы останутся)  (make docker-down)
-docker compose run --rm news-aggregator --config config/config.yaml --once --verbose  # разовый запуск с подробными логами  (make docker-run-once)
+docker compose run --rm --build news-aggregator --config config/config.yaml --once --verbose  # разовый запуск с подробными логами (--build подстрахует, если забыли пересобрать после git pull)
 ```
 
 `./config` монтируется как `:ro` (read-only) — можно редактировать
@@ -736,9 +736,16 @@ python -m news_aggregator.main --config config/config.yaml --validate-config
 
 ```bash
 git pull
-docker compose run --rm news-aggregator --config config/config.yaml --validate-config \
+docker compose run --rm --build news-aggregator --config config/config.yaml --validate-config \
   && docker compose up -d --build
 ```
+
+`--build` в `docker compose run` обязателен: без него команда выполнится на
+**старом** образе (Compose не пересобирает образ для `run` сам по себе), и
+проверка/фикс, за которым вы обновлялись, попросту не попадёт в проверяемый
+код — вы получите старую ошибку на новом коде и не поймёте, в чём дело.
+`up -d --build` во второй части пересобирает то же самое ещё раз, но
+Docker-кэш слоёв делает это мгновенным.
 
 ## Тесты
 
