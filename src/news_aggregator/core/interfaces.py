@@ -14,9 +14,11 @@ from datetime import datetime
 
 from news_aggregator.core.models import (
     DeduplicationResult,
+    PipelineStats,
     ProcessedMessage,
     RawMessage,
     Source,
+    StatsSummary,
 )
 
 
@@ -239,6 +241,27 @@ class ISourceRepository(ABC):
     @abstractmethod
     async def set_enabled(self, source_id: str, enabled: bool) -> bool:
         """Включает/выключает источник по id. Возвращает True, если найден."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Освобождает ресурсы хранилища (соединения и т.п.)."""
+
+
+class IRunStatsStore(ABC):
+    """Хранилище статистики прогонов пайплайна (для /stats и алертинга).
+
+    Отдельный интерфейс (как ISourceRepository/ISimhashIndex): это история
+    во времени, а не состояние, нужное самому пайплайну для работы.
+    Реализация сама ограничивает объём хранимых данных.
+    """
+
+    @abstractmethod
+    async def record(self, stats: PipelineStats, at: datetime | None = None) -> None:
+        """Сохраняет итоги одного прогона (at — момент прогона, по умолчанию «сейчас», UTC)."""
+
+    @abstractmethod
+    async def summarize(self, since: datetime) -> StatsSummary:
+        """Суммирует прогоны, начавшиеся не раньше since."""
 
     @abstractmethod
     async def close(self) -> None:

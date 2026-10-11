@@ -24,6 +24,7 @@ from news_aggregator.filters.length_filter import LengthFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
 from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
+from news_aggregator.storage.sqlite_run_stats import SqliteRunStatsStore
 from news_aggregator.storage.sqlite_simhash_index import SqliteSimhashIndex
 from news_aggregator.storage.sqlite_source_repository import SqliteSourceRepository
 from news_aggregator.storage.sqlite_storage import SqliteStorage
@@ -70,6 +71,9 @@ def build_registry() -> ComponentRegistry:
     # Индекс множеств лемм для paraphrase_deduplicator (см.
     # storage/sqlite_lemma_index.py)
     registry.lemma_indexes.register("sqlite", SqliteLemmaIndex)
+
+    # История прогонов для /stats бота (storage/sqlite_run_stats.py)
+    registry.run_stats_stores.register("sqlite", SqliteRunStatsStore)
 
     _try_register_telegram(registry)
 

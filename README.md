@@ -28,7 +28,7 @@
   требует правки пайплайна**.
 - Падение одного источника не останавливает обработку остальных.
 - Опциональный Telegram-бот для управления списком каналов командами
-  (`/add`, `/remove`, `/list`, `/pause`, `/resume`) — без правки
+  (`/add`, `/remove`, `/list`, `/pause`, `/resume`, `/stats`) — без правки
   `config.yaml` и без перезапуска процесса.
 - Резервное копирование БД с ротацией (`news_aggregator.maintenance`) и
   heartbeat-файл с Docker `HEALTHCHECK` для обнаружения зависшего процесса.
@@ -42,7 +42,7 @@ src/news_aggregator/
 │   │                     formatting_entities), ProcessedMessage,
 │   │                     DeduplicationResult, PipelineStats
 │   ├── interfaces.py     ISourceReader, ISourceRepository, ISimhashIndex,
-│   │                     ILemmaSetIndex, IFilter, IDeduplicator, IEnricher,
+│   │                     ILemmaSetIndex, IRunStatsStore, IFilter, IDeduplicator, IEnricher,
 │   │                     IPublisher, IStorage (ABC)
 │   ├── text_utils.py     normalize_text, extract_links, compute_text_hash
 │   ├── simhash.py         compute_simhash (char/word шинглы), hamming_distance
@@ -52,7 +52,7 @@ src/news_aggregator/
 │                          фильтрует → дедуплицирует → публикует → сохраняет
 ├── config/          # YAML + .env, без секретов в датаклассах
 ├── storage/         # SqliteStorage, SqliteSourceRepository,
-│                      SqliteSimhashIndex, SqliteLemmaIndex
+│                      SqliteSimhashIndex, SqliteLemmaIndex, SqliteRunStatsStore
 ├── sources/          fake_source.py, telegram_source.py, telegram_client.py
 ├── filters/           length_filter.py, ad_filter.py
 ├── dedup/              hash_deduplicator.py, link_deduplicator.py,
@@ -237,6 +237,24 @@ sources:
 | `/remove <id>` | Удалить канал |
 | `/pause <id>` | Временно выключить канал, не удаляя |
 | `/resume <id>` | Снова включить канал |
+| `/stats [часов]` | Статистика прогонов за окно (по умолчанию 1 час, максимум 168): прочитано / отфильтровано / дублей / опубликовано, сбои источников, время последнего прогона |
+
+Пример `/stats`:
+
+```
+Статистика за последние 1 ч (прогонов: 58):
+📥 Прочитано: 12
+🚫 Отфильтровано: 3
+♻️ Дублей: 4
+✅ Опубликовано: 5
+Сбоев источников нет.
+Последний прогон: 42 с назад
+```
+
+Цифры берутся из таблицы `run_stats` (одна строка на прогон). История хранится
+7 суток и чистится сама. Строка «Последний прогон» — быстрый способ проверить, что
+процесс жив. Если за окно прогонов нет совсем, бот так и скажет. В режиме
+`dry_run: true` «Опубликовано» считает то, что было бы опубликовано.
 
 `id` для `/remove`/`/pause`/`/resume` смотрите в выводе `/list` — он
 выводится автоматически из `identifier` (как и при коротком синтаксисе в
@@ -440,7 +458,8 @@ NFKC, удаление хэштегов/упоминаний (`#tag`, `@channel`
    ```
 
 Аналогично для `IDeduplicator`, `IEnricher`, `IPublisher`, `ISourceReader`,
-`IStorage`, `ISourceRepository`, `ISimhashIndex`, `ILemmaSetIndex`.
+`IStorage`, `ISourceRepository`, `ISimhashIndex`, `ILemmaSetIndex`,
+`IRunStatsStore`.
 
 ## Docker
 

@@ -157,3 +157,28 @@ class PipelineStats:
     def add_error(self, message: str) -> None:
         """Регистрирует ошибку, не прерывая выполнение пайплайна."""
         self.errors.append(message)
+
+
+@dataclass(frozen=True, slots=True)
+class StatsSummary:
+    """Агрегированная статистика прогонов пайплайна за окно времени.
+
+    Attributes:
+        runs: Сколько прогонов run_once() попало в окно.
+        messages_fetched / messages_filtered_out / messages_duplicate /
+            messages_published: Суммы соответствующих счётчиков PipelineStats.
+        runs_with_failures: Сколько прогонов закончились с упавшими источниками.
+        sources_failed_total: Суммарное число упавших источников по всем прогонам
+            (один и тот же источник, падающий каждый прогон, считается каждый раз).
+        last_run_at: Время самого свежего прогона в окне (UTC) или None, если
+            прогонов в окне не было.
+    """
+
+    runs: int = 0
+    messages_fetched: int = 0
+    messages_filtered_out: int = 0
+    messages_duplicate: int = 0
+    messages_published: int = 0
+    runs_with_failures: int = 0
+    sources_failed_total: int = 0
+    last_run_at: datetime | None = None

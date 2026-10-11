@@ -266,3 +266,63 @@ async def test_run_forever_works_without_heartbeat_path() -> None:
     await _run_forever(pipeline, 0, None, None)  # type: ignore[arg-type]
 
     assert pipeline.calls == 2
+
+
+# ------------------------------------------------ интеграция со статистикой прогонов
+
+
+class _RecordingStatsStore:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.recorded: list[object] = []
+        self._fail = fail
+
+    async def record(self, stats: object, at: object = None) -> None:
+        if self._fail:
+            raise RuntimeError("диск переполнен")
+        self.recorded.append(stats)
+
+
+class _StatsPipeline:
+    """Возвращает PipelineStats из run_once, как настоящий пайплайн."""
+
+    def __init__(self, stop_after: int) -> None:
+        self.calls = 0
+        self._stop_after = stop_after
+
+    async def run_once(self) -> object:
+        from news_aggregator.core.models import PipelineStats
+
+        self.calls += 1
+        if self.calls == self._stop_after:
+            raise asyncio.CancelledError
+        return PipelineStats(messages_fetched=self.calls)
+
+
+async def test_run_forever_records_stats_for_every_completed_run(tmp_path: Path) -> None:
+    store = _RecordingStatsStore()
+    pipeline = _StatsPipeline(stop_after=4)
+
+    await _run_forever(pipeline, 0, None, None, store)  # type: ignore[arg-type]
+
+    assert [s.messages_fetched for s in store.recorded] == [1, 2, 3]  # type: ignore[attr-defined]
+
+
+async def test_run_forever_survives_stats_store_failure_and_still_writes_heartbeat(
+    tmp_path: Path,
+) -> None:
+    """Сбой записи статистики не должен ни останавливать цикл, ни глушить heartbeat."""
+    path = tmp_path / "heartbeat"
+    pipeline = _StatsPipeline(stop_after=3)
+
+    await _run_forever(pipeline, 0, None, path, _RecordingStatsStore(fail=True))  # type: ignore[arg-type]
+
+    assert pipeline.calls == 3
+    assert read_heartbeat(path) is not None
+
+
+async def test_run_forever_works_without_stats_store() -> None:
+    pipeline = _StatsPipeline(stop_after=3)
+
+    await _run_forever(pipeline, 0, None, None, None)  # type: ignore[arg-type]
+
+    assert pipeline.calls == 3

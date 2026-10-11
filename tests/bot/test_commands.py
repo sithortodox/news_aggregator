@@ -1,5 +1,13 @@
-from news_aggregator.bot.commands import cmd_add, cmd_list, cmd_remove, cmd_set_enabled
-from news_aggregator.core.models import SourceKind
+from datetime import UTC, datetime, timedelta
+
+from news_aggregator.bot.commands import (
+    cmd_add,
+    cmd_list,
+    cmd_remove,
+    cmd_set_enabled,
+    cmd_stats,
+)
+from news_aggregator.core.models import SourceKind, StatsSummary
 from tests.support.in_memory_source_repository import InMemorySourceRepository
 
 
@@ -122,3 +130,137 @@ async def test_pause_without_args_shows_usage_with_correct_verb() -> None:
 
     text2 = await cmd_set_enabled([], InMemorySourceRepository(), enabled=True)
     assert "/resume" in text2
+
+
+# ---------------------------------------------------------------- /stats
+
+_NOW = datetime(2026, 1, 10, 12, 0, 0, tzinfo=UTC)
+
+
+class _FakeStatsStore:
+    """Двойник IRunStatsStore: запоминает запрошенное окно и отдаёт готовую сводку."""
+
+    def __init__(self, summary: StatsSummary) -> None:
+        self._summary = summary
+        self.requested_since: datetime | None = None
+
+    async def summarize(self, since: datetime) -> StatsSummary:
+        self.requested_since = since
+        return self._summary
+
+
+def _summary(**overrides: object) -> StatsSummary:
+    base: dict[str, object] = {
+        "runs": 60,
+        "messages_fetched": 12,
+        "messages_filtered_out": 3,
+        "messages_duplicate": 4,
+        "messages_published": 5,
+        "runs_with_failures": 0,
+        "sources_failed_total": 0,
+        "last_run_at": _NOW - timedelta(seconds=30),
+    }
+    base.update(overrides)
+    return StatsSummary(**base)  # type: ignore[arg-type]
+
+
+async def test_stats_without_store_says_not_enabled() -> None:
+    text = await cmd_stats([], None)
+    assert "не включена" in text
+
+
+async def test_stats_default_window_is_one_hour() -> None:
+    store = _FakeStatsStore(_summary())
+
+    text = await cmd_stats([], store, now=_NOW)  # type: ignore[arg-type]
+
+    assert store.requested_since == _NOW - timedelta(hours=1)
+    assert "последние 1 ч" in text
+
+
+async def test_stats_shows_all_counters() -> None:
+    text = await cmd_stats([], _FakeStatsStore(_summary()), now=_NOW)  # type: ignore[arg-type]
+
+    assert "Прочитано: 12" in text
+    assert "Отфильтровано: 3" in text
+    assert "Дублей: 4" in text
+    assert "Опубликовано: 5" in text
+    assert "прогонов: 60" in text
+
+
+async def test_stats_custom_window_in_hours() -> None:
+    store = _FakeStatsStore(_summary())
+
+    text = await cmd_stats(["24"], store, now=_NOW)  # type: ignore[arg-type]
+
+    assert store.requested_since == _NOW - timedelta(hours=24)
+    assert "последние 24 ч" in text
+
+
+async def test_stats_accepts_comma_decimal_and_fractional_window() -> None:
+    store = _FakeStatsStore(_summary())
+
+    text = await cmd_stats(["0,5"], store, now=_NOW)  # type: ignore[arg-type]
+
+    assert store.requested_since == _NOW - timedelta(minutes=30)
+    assert "последние 30 мин" in text
+
+
+async def test_stats_reports_failures_when_present() -> None:
+    summary = _summary(runs_with_failures=4, sources_failed_total=9)
+
+    text = await cmd_stats([], _FakeStatsStore(summary), now=_NOW)  # type: ignore[arg-type]
+
+    assert "4 из 60" in text
+    assert "9" in text
+    assert "Сбоев источников нет" not in text
+
+
+async def test_stats_says_no_failures_when_clean() -> None:
+    text = await cmd_stats([], _FakeStatsStore(_summary()), now=_NOW)  # type: ignore[arg-type]
+
+    assert "Сбоев источников нет" in text
+
+
+async def test_stats_with_no_runs_hints_to_check_process() -> None:
+    summary = _summary(runs=0, last_run_at=None)
+
+    text = await cmd_stats([], _FakeStatsStore(summary), now=_NOW)  # type: ignore[arg-type]
+
+    assert "прогонов не было" in text
+    assert "docker compose" in text
+
+
+async def test_stats_shows_age_of_last_run() -> None:
+    summary = _summary(last_run_at=_NOW - timedelta(minutes=7))
+
+    text = await cmd_stats([], _FakeStatsStore(summary), now=_NOW)  # type: ignore[arg-type]
+
+    assert "Последний прогон: 7 мин назад" in text
+
+
+async def test_stats_rejects_garbage_argument() -> None:
+    store = _FakeStatsStore(_summary())
+
+    text = await cmd_stats(["abc"], store, now=_NOW)  # type: ignore[arg-type]
+
+    assert "Использование" in text
+    assert store.requested_since is None  # в хранилище не ходили
+
+
+async def test_stats_rejects_out_of_range_windows() -> None:
+    store = _FakeStatsStore(_summary())
+
+    for bad in ("0", "-3", "169", "1000"):
+        text = await cmd_stats([bad], store, now=_NOW)  # type: ignore[arg-type]
+        assert "от 0 до" in text, bad
+
+    assert store.requested_since is None
+
+
+async def test_stats_accepts_exactly_max_window() -> None:
+    store = _FakeStatsStore(_summary())
+
+    await cmd_stats(["168"], store, now=_NOW)  # type: ignore[arg-type]
+
+    assert store.requested_since == _NOW - timedelta(hours=168)

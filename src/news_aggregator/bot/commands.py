@@ -10,8 +10,10 @@ ISourceRepository, а возвращает готовый текст ответ�
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from news_aggregator.config.schema import slugify_identifier
-from news_aggregator.core.interfaces import ISourceRepository
+from news_aggregator.core.interfaces import IRunStatsStore, ISourceRepository
 from news_aggregator.core.models import Source, SourceKind
 
 USAGE = (
@@ -21,7 +23,8 @@ USAGE = (
     "(kind: telegram_channel по умолчанию, или telegram_group)\n"
     "/remove <id> — удалить канал\n"
     "/pause <id> — временно выключить канал (без удаления)\n"
-    "/resume <id> — снова включить канал"
+    "/resume <id> — снова включить канал\n"
+    "/stats [часов] — статистика прогонов (по умолчанию за последний час)"
 )
 
 
@@ -103,3 +106,70 @@ async def cmd_set_enabled(args: list[str], repository: ISourceRepository, *, ena
     if not changed:
         return f"Не найден источник с id '{source_id}'. Посмотрите /list"
     return f"{'Включено' if enabled else 'Приостановлено'}: {source_id}"
+
+
+DEFAULT_STATS_HOURS = 1.0
+MAX_STATS_HOURS = 168.0  # неделя — столько хранится история прогонов
+
+
+def _format_age(delta: timedelta) -> str:
+    seconds = max(int(delta.total_seconds()), 0)
+    if seconds < 60:
+        return f"{seconds} с назад"
+    if seconds < 3600:
+        return f"{seconds // 60} мин назад"
+    hours, minutes = divmod(seconds // 60, 60)
+    return f"{hours} ч {minutes} мин назад"
+
+
+def _format_window(hours: float) -> str:
+    if hours < 1:
+        return f"{round(hours * 60)} мин"
+    if hours == int(hours):
+        return f"{int(hours)} ч"
+    return f"{hours:g} ч"
+
+
+async def cmd_stats(
+    args: list[str], stats_store: IRunStatsStore | None, *, now: datetime | None = None
+) -> str:
+    """Сводка по прогонам пайплайна за окно времени: /stats [часов]."""
+    if stats_store is None:
+        return "Статистика не включена: хранилище прогонов недоступно."
+
+    hours = DEFAULT_STATS_HOURS
+    if args:
+        try:
+            hours = float(args[0].replace(",", "."))
+        except ValueError:
+            return f"Не понял «{args[0]}». Использование: /stats [часов], например /stats 24"
+        if not 0 < hours <= MAX_STATS_HOURS:
+            return f"Окно должно быть от 0 до {MAX_STATS_HOURS:g} часов (хранится неделя)."
+
+    moment = now or datetime.now(UTC)
+    summary = await stats_store.summarize(moment - timedelta(hours=hours))
+    window = _format_window(hours)
+
+    if summary.runs == 0:
+        return (
+            f"За последние {window} прогонов не было.\n"
+            "Если процесс должен работать — проверьте его: docker compose ps / logs."
+        )
+
+    lines = [
+        f"Статистика за последние {window} (прогонов: {summary.runs}):",
+        f"📥 Прочитано: {summary.messages_fetched}",
+        f"🚫 Отфильтровано: {summary.messages_filtered_out}",
+        f"♻️ Дублей: {summary.messages_duplicate}",
+        f"✅ Опубликовано: {summary.messages_published}",
+    ]
+    if summary.runs_with_failures:
+        lines.append(
+            f"⚠️ Прогонов с упавшими источниками: {summary.runs_with_failures} "
+            f"из {summary.runs} (всего падений источников: {summary.sources_failed_total})"
+        )
+    else:
+        lines.append("Сбоев источников нет.")
+    if summary.last_run_at is not None:
+        lines.append(f"Последний прогон: {_format_age(moment - summary.last_run_at)}")
+    return "\n".join(lines)

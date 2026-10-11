@@ -34,6 +34,7 @@ from news_aggregator.core.interfaces import (
     IFilter,
     ILemmaSetIndex,
     IPublisher,
+    IRunStatsStore,
     ISimhashIndex,
     ISourceReader,
     ISourceRepository,
@@ -400,7 +401,9 @@ def _print_validation_summary(config: AppConfig, sources: list[Source]) -> None:
 
 
 def _try_build_bot(
-    secrets: TelegramSecrets, source_repository: ISourceRepository
+    secrets: TelegramSecrets,
+    source_repository: ISourceRepository,
+    stats_store: IRunStatsStore | None = None,
 ) -> AggregatorBotType | None:
     """Пытается собрать бота управления каналами.
 
@@ -432,6 +435,7 @@ def _try_build_bot(
         token=secrets.bot_token,
         owner_id=secrets.bot_owner_id,
         repository=source_repository,
+        stats_store=stats_store,
     )
 
 
@@ -440,20 +444,28 @@ async def _run_forever(
     poll_interval_seconds: int,
     bot: AggregatorBotType | None,
     heartbeat_path: Path | None,
+    stats_store: IRunStatsStore | None = None,
 ) -> None:
     """Цикл постоянного опроса источников, опционально вместе с ботом
     управления каналами (оба крутятся в одном event loop).
 
-    После каждого успешного run_once() обновляется heartbeat-файл (если
-    heartbeat_path задан) — по нему Docker HEALTHCHECK и внешний watchdog
-    видят, что цикл жив и продвигается, а не завис. См. news_aggregator.healthcheck.
+    После каждого run_once() итоги прогона пишутся в stats_store (для /stats;
+    сбой записи только логируется и цикл не останавливает), затем
+    обновляется heartbeat-файл (если heartbeat_path задан). По нему Docker
+    HEALTHCHECK и внешний watchdog видят, что цикл жив и продвигается, а не
+    завис. См. news_aggregator.healthcheck.
     """
     stop_event = asyncio.Event()
     bot_task = asyncio.create_task(bot.run(stop_event)) if bot is not None else None
 
     try:
         while True:
-            await pipeline.run_once()
+            stats = await pipeline.run_once()
+            if stats_store is not None:
+                try:
+                    await stats_store.record(stats)
+                except Exception:
+                    logger.exception("Не удалось сохранить статистику прогона")
             if heartbeat_path is not None:
                 write_heartbeat(heartbeat_path)
             await asyncio.sleep(poll_interval_seconds)
@@ -524,9 +536,15 @@ async def _async_main(argv: list[str] | None = None) -> int:
         return 0
 
     secrets = load_env_secrets()
-    bot = _try_build_bot(secrets, source_repository)
+    stats_store = cast(
+        IRunStatsStore,
+        registry.run_stats_stores.create("sqlite", db_path=_shared_sqlite_db_path(config)),
+    )
+    bot = _try_build_bot(secrets, source_repository, stats_store)
     heartbeat_path = heartbeat_path_for_db(Path(_shared_sqlite_db_path(config)))
-    await _run_forever(pipeline, config.pipeline.poll_interval_seconds, bot, heartbeat_path)
+    await _run_forever(
+        pipeline, config.pipeline.poll_interval_seconds, bot, heartbeat_path, stats_store
+    )
     return 0
 
 

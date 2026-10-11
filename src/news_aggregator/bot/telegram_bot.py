@@ -19,8 +19,15 @@ from typing import Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from news_aggregator.bot.commands import USAGE, cmd_add, cmd_list, cmd_remove, cmd_set_enabled
-from news_aggregator.core.interfaces import ISourceRepository
+from news_aggregator.bot.commands import (
+    USAGE,
+    cmd_add,
+    cmd_list,
+    cmd_remove,
+    cmd_set_enabled,
+    cmd_stats,
+)
+from news_aggregator.core.interfaces import IRunStatsStore, ISourceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +35,18 @@ _UNAUTHORIZED_REPLY = "Эта команда доступна только вл�
 
 
 class AggregatorBot:
-    """Long-polling Telegram-бот для команд /list, /add, /remove, /pause, /resume."""
+    """Long-polling Telegram-бот: /list, /add, /remove, /pause, /resume, /stats."""
 
-    def __init__(self, token: str, owner_id: int, repository: ISourceRepository) -> None:
+    def __init__(
+        self,
+        token: str,
+        owner_id: int,
+        repository: ISourceRepository,
+        stats_store: IRunStatsStore | None = None,
+    ) -> None:
         self._owner_id = owner_id
         self._repository = repository
+        self._stats_store = stats_store
         self._app: Application[Any, Any, Any, Any, Any, Any] = (
             Application.builder().token(token).build()
         )
@@ -45,6 +59,7 @@ class AggregatorBot:
         self._app.add_handler(CommandHandler("remove", self._handle_remove))
         self._app.add_handler(CommandHandler("pause", self._handle_pause))
         self._app.add_handler(CommandHandler("resume", self._handle_resume))
+        self._app.add_handler(CommandHandler("stats", self._handle_stats))
 
     def _is_owner(self, update: Update) -> bool:
         return update.effective_user is not None and update.effective_user.id == self._owner_id
@@ -83,6 +98,12 @@ class AggregatorBot:
             return
         text = await cmd_set_enabled(list(context.args or []), self._repository, enabled=False)
         await self._reply(update, text)
+
+    async def _handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self._is_owner(update):
+            await self._reply(update, _UNAUTHORIZED_REPLY)
+            return
+        await self._reply(update, await cmd_stats(list(context.args or []), self._stats_store))
 
     async def _handle_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_owner(update):
