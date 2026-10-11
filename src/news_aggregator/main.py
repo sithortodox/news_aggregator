@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from news_aggregator.bootstrap import build_registry
@@ -41,6 +42,7 @@ from news_aggregator.core.interfaces import (
 from news_aggregator.core.models import Source
 from news_aggregator.core.pipeline import AggregatorPipeline
 from news_aggregator.core.registry import ComponentNotRegisteredError, ComponentRegistry
+from news_aggregator.healthcheck import heartbeat_path_for_db, write_heartbeat
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -437,15 +439,23 @@ async def _run_forever(
     pipeline: AggregatorPipeline,
     poll_interval_seconds: int,
     bot: AggregatorBotType | None,
+    heartbeat_path: Path | None,
 ) -> None:
     """Цикл постоянного опроса источников, опционально вместе с ботом
-    управления каналами (оба крутятся в одном event loop)."""
+    управления каналами (оба крутятся в одном event loop).
+
+    После каждого успешного run_once() обновляется heartbeat-файл (если
+    heartbeat_path задан) — по нему Docker HEALTHCHECK и внешний watchdog
+    видят, что цикл жив и продвигается, а не завис. См. news_aggregator.healthcheck.
+    """
     stop_event = asyncio.Event()
     bot_task = asyncio.create_task(bot.run(stop_event)) if bot is not None else None
 
     try:
         while True:
             await pipeline.run_once()
+            if heartbeat_path is not None:
+                write_heartbeat(heartbeat_path)
             await asyncio.sleep(poll_interval_seconds)
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Остановлено пользователем")
@@ -515,7 +525,8 @@ async def _async_main(argv: list[str] | None = None) -> int:
 
     secrets = load_env_secrets()
     bot = _try_build_bot(secrets, source_repository)
-    await _run_forever(pipeline, config.pipeline.poll_interval_seconds, bot)
+    heartbeat_path = heartbeat_path_for_db(Path(_shared_sqlite_db_path(config)))
+    await _run_forever(pipeline, config.pipeline.poll_interval_seconds, bot, heartbeat_path)
     return 0
 
 

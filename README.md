@@ -30,6 +30,8 @@
 - Опциональный Telegram-бот для управления списком каналов командами
   (`/add`, `/remove`, `/list`, `/pause`, `/resume`) — без правки
   `config.yaml` и без перезапуска процесса.
+- Резервное копирование БД с ротацией (`news_aggregator.maintenance`) и
+  heartbeat-файл с Docker `HEALTHCHECK` для обнаружения зависшего процесса.
 
 ## Архитектура
 
@@ -58,6 +60,8 @@ src/news_aggregator/
 ├── publishers/         console_publisher.py, telegram_publisher.py
 ├── bot/              commands.py (чистая логика), telegram_bot.py (обвязка PTB)
 ├── bootstrap.py     # Регистрация всех компонентов в ComponentRegistry
+├── maintenance.py   # Бэкап/VACUUM БД (CLI: python -m news_aggregator.maintenance)
+├── healthcheck.py   # Heartbeat + Docker HEALTHCHECK (см. "Мониторинг здоровья процесса")
 └── main.py          # CLI и точка входа
 ```
 
@@ -503,6 +507,41 @@ docker compose run --rm --build news-aggregator --config config/config.yaml --on
 `./config` монтируется как `:ro` (read-only) — можно редактировать
 `config.yaml` на хосте (например, добавить канал) и просто перезапустить
 контейнер (`docker compose restart`), без пересборки образа.
+
+## Мониторинг здоровья процесса
+
+Основной цикл (режим без `--once`) после каждого успешного `run_once()`
+обновляет heartbeat-файл рядом с БД состояния (`data/heartbeat`). Если
+метка "протухла" сильнее, чем `poll_interval_seconds` + запас (по
+умолчанию 60 секунд) — значит цикл завис, упал или заблокирован на
+сетевом вызове без таймаута.
+
+Docker-образ проверяет это сам, каждую минуту (`HEALTHCHECK` в
+`Dockerfile`):
+
+```bash
+docker compose ps                     # STATUS покажет (healthy) / (unhealthy) / (starting)
+docker inspect --format='{{json .State.Health}}' news-aggregator | python3 -m json.tool
+```
+
+**Важный нюанс Docker**: `unhealthy` — это только статус, видимый в
+`docker compose ps`/`docker inspect` и внешних системах мониторинга. Сам
+по себе он **не перезапускает контейнер** — `restart: unless-stopped` в
+`docker-compose.yml` реагирует на завершение процесса, а не на статус
+healthcheck'а. Если нужен автоматический перезапуск именно по unhealthy,
+добавьте рядом лёгкий watchdog-контейнер, например
+[willfarrell/autoheal](https://github.com/willfarrell/docker-autoheal)
+(следит за статусом всех контейнеров с `HEALTHCHECK` и рестартует
+`unhealthy` сам). Пока не настроено — считайте `unhealthy` сигналом
+посмотреть логи руками, а не тем, что само починится.
+
+Проверить heartbeat можно и вручную, без Docker (например, из systemd-
+варианта деплоя или простым cron-мониторингом):
+
+```bash
+python -m news_aggregator.healthcheck --config config/config.yaml
+echo $?   # 0 — здоров, 1 — heartbeat отсутствует или устарел
+```
 
 ## Деплой на VPS
 

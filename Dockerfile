@@ -33,3 +33,14 @@ VOLUME ["/app/data"]
 
 ENTRYPOINT ["python", "-m", "news_aggregator.main"]
 CMD ["--config", "config/config.yaml"]
+
+# Раз в минуту проверяем heartbeat-файл, который основной цикл обновляет
+# после каждого run_once() (см. news_aggregator/healthcheck.py). Порог
+# свежести читается из смонтированного config.yaml динамически
+# (poll_interval_seconds + запас), так что start-period ниже — это только
+# грация на первый прогон при старте контейнера, а не сам порог свежести.
+# Статус проверяется через `docker compose ps` / `docker inspect`; сам по
+# себе HEALTHCHECK не перезапускает контейнер (restart-политика реагирует
+# на завершение процесса, а не на unhealthy) — подробности в README.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
+    CMD ["python", "-m", "news_aggregator.healthcheck", "--config", "config/config.yaml"]
