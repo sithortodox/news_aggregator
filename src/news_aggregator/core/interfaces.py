@@ -266,3 +266,11 @@ class IRunStatsStore(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Освобождает ресурсы хранилища (соединения и т.п.)."""
+
+
+class IAlertSink(ABC):
+    """Получатель оповещений о проблемах (в проекте — владелец через Telegram-бота)."""
+
+    @abstractmethod
+    async def send(self, text: str) -> None:
+        """Отправляет оповещение. Может бросать исключение — вызывающий код его перехватит."""

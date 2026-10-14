@@ -8,6 +8,10 @@
 Персональный инструмент: отвечает только пользователю с id == owner_id,
 остальным — вежливый отказ. Никакого группового/многопользовательского
 доступа не подразумевается.
+
+Он же — получатель оповещений о сбоях (IAlertSink): send() пишет владельцу
+в личные сообщения. Telegram не даёт боту писать первым, поэтому владелец
+должен один раз отправить боту /start.
 """
 
 from __future__ import annotations
@@ -27,14 +31,14 @@ from news_aggregator.bot.commands import (
     cmd_set_enabled,
     cmd_stats,
 )
-from news_aggregator.core.interfaces import IRunStatsStore, ISourceRepository
+from news_aggregator.core.interfaces import IAlertSink, IRunStatsStore, ISourceRepository
 
 logger = logging.getLogger(__name__)
 
 _UNAUTHORIZED_REPLY = "Эта команда доступна только владельцу бота."
 
 
-class AggregatorBot:
+class AggregatorBot(IAlertSink):
     """Long-polling Telegram-бот: /list, /add, /remove, /pause, /resume, /stats."""
 
     def __init__(
@@ -43,8 +47,13 @@ class AggregatorBot:
         owner_id: int,
         repository: ISourceRepository,
         stats_store: IRunStatsStore | None = None,
+        *,
+        ready_timeout_seconds: float = 30.0,
     ) -> None:
         self._owner_id = owner_id
+        # Выставляется, когда Application инициализирован и бот может слать запросы.
+        self._ready = asyncio.Event()
+        self._ready_timeout = ready_timeout_seconds
         self._repository = repository
         self._stats_store = stats_store
         self._app: Application[Any, Any, Any, Any, Any, Any] = (
@@ -112,16 +121,31 @@ class AggregatorBot:
         text = await cmd_set_enabled(list(context.args or []), self._repository, enabled=True)
         await self._reply(update, text)
 
+    async def send(self, text: str) -> None:
+        """Отправляет оповещение владельцу в личные сообщения (IAlertSink).
+
+        Если бот ещё не стартовал, ждёт до ready_timeout_seconds — оповещение
+        на самом первом прогоне может опередить запуск long polling.
+        """
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=self._ready_timeout)
+        except TimeoutError as exc:
+            raise RuntimeError("бот управления ещё не запущен, оповещение не отправлено") from exc
+        # Лимит Telegram — 4096 символов; оповещения короткие, но защищаемся.
+        await self._app.bot.send_message(chat_id=self._owner_id, text=text[:4000])
+
     async def run(self, stop_event: asyncio.Event) -> None:
         """Запускает long-polling; блокируется до срабатывания stop_event."""
         await self._app.initialize()
         await self._app.start()
         assert self._app.updater is not None
         await self._app.updater.start_polling()
+        self._ready.set()
         logger.info("Бот управления каналами запущен (long polling)")
         try:
             await stop_event.wait()
         finally:
+            self._ready.clear()
             logger.info("Останавливаю бота управления каналами...")
             await self._app.updater.stop()
             await self._app.stop()

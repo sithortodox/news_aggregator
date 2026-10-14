@@ -191,3 +191,82 @@ def test_load_env_secrets_defaults_when_no_env(
     assert secrets.api_id is None
     assert secrets.api_hash is None
     assert secrets.session_name == "news_aggregator"
+
+
+# ---------------------------------------------------------------------- alerts
+
+
+def _alerts_config(tmp_path: Path, alerts_block: str) -> Path:
+    return _write(tmp_path, VALID_YAML + alerts_block)
+
+
+def test_alerts_section_is_optional_and_defaults_apply(tmp_path: Path) -> None:
+    config = load_app_config(_write(tmp_path, VALID_YAML))
+
+    assert config.alerts.enabled is True
+    assert config.alerts.source_failure_threshold == 5
+    assert config.alerts.publish_failure_threshold == 1
+    assert config.alerts.flood_wait_alert_seconds == 300.0
+    assert config.alerts.cooldown_seconds == 3600.0
+
+
+def test_alerts_section_overrides_values(tmp_path: Path) -> None:
+    config = load_app_config(
+        _alerts_config(
+            tmp_path,
+            """
+alerts:
+  enabled: false
+  source_failure_threshold: 3
+  publish_failure_threshold: 2
+  flood_wait_alert_seconds: 120
+  cooldown_seconds: 600.5
+""",
+        )
+    )
+
+    assert config.alerts.enabled is False
+    assert config.alerts.source_failure_threshold == 3
+    assert config.alerts.publish_failure_threshold == 2
+    assert config.alerts.flood_wait_alert_seconds == 120.0
+    assert config.alerts.cooldown_seconds == 600.5
+
+
+def test_alerts_partial_section_keeps_other_defaults(tmp_path: Path) -> None:
+    config = load_app_config(
+        _alerts_config(tmp_path, "\nalerts:\n  source_failure_threshold: 10\n")
+    )
+
+    assert config.alerts.source_failure_threshold == 10
+    assert config.alerts.cooldown_seconds == 3600.0
+
+
+def test_alerts_unknown_key_is_an_error_not_silently_ignored(tmp_path: Path) -> None:
+    """Опечатка в настройке защитного механизма не должна молча оставлять дефолт."""
+    path = _alerts_config(tmp_path, "\nalerts:\n  source_failure_treshold: 3\n")
+
+    with pytest.raises(ConfigError, match="source_failure_treshold"):
+        load_app_config(path)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "alerts:\n  source_failure_threshold: 0\n",
+        "alerts:\n  source_failure_threshold: -1\n",
+        "alerts:\n  source_failure_threshold: 2.5\n",
+        "alerts:\n  source_failure_threshold: true\n",
+        "alerts:\n  source_failure_threshold: 'пять'\n",
+        "alerts:\n  publish_failure_threshold: 0\n",
+        "alerts:\n  flood_wait_alert_seconds: 0\n",
+        "alerts:\n  flood_wait_alert_seconds: -5\n",
+        "alerts:\n  cooldown_seconds: 0\n",
+        "alerts:\n  cooldown_seconds: false\n",
+        "alerts:\n  enabled: 'yes'\n",
+        "alerts:\n  enabled: 1\n",
+        "alerts: [1, 2]\n",
+    ],
+)
+def test_alerts_invalid_values_raise_config_error(tmp_path: Path, block: str) -> None:
+    with pytest.raises(ConfigError):
+        load_app_config(_alerts_config(tmp_path, "\n" + block))

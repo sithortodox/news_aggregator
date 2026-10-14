@@ -47,6 +47,28 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AlertsConfig:
+    """Настройки оповещений о сбоях (см. news_aggregator.alerts).
+
+    Attributes:
+        enabled: Включены ли оповещения.
+        source_failure_threshold: Через сколько подряд упавших прогонов источника
+            оповещать о его недоступности.
+        publish_failure_threshold: То же для сбоев публикации (по умолчанию 1:
+            каждый сбой издателя — потерянный пост).
+        flood_wait_alert_seconds: FloodWait длиннее этого оповещает владельца.
+        cooldown_seconds: Минимальный интервал между повторными оповещениями об
+            одной и той же проблеме (защита от спама при «мигающих» сбоях).
+    """
+
+    enabled: bool = True
+    source_failure_threshold: int = 5
+    publish_failure_threshold: int = 1
+    flood_wait_alert_seconds: float = 300.0
+    cooldown_seconds: float = 3600.0
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Корневая конфигурация приложения, полученная из config.yaml."""
 
@@ -57,6 +79,7 @@ class AppConfig:
     publishers: tuple[ComponentConfig, ...]
     storage: StorageConfig
     pipeline: PipelineConfig
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
 
 
 def slugify_identifier(identifier: str) -> str:

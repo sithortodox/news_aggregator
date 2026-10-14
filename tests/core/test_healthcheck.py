@@ -326,3 +326,66 @@ async def test_run_forever_works_without_stats_store() -> None:
     await _run_forever(pipeline, 0, None, None, None)  # type: ignore[arg-type]
 
     assert pipeline.calls == 3
+
+
+# ------------------------------------------------------- интеграция с оповещениями
+
+
+class _RecordingAlertManager:
+    def __init__(self, *, fail: bool = False, heartbeat_path: Path | None = None) -> None:
+        self.observed: list[object] = []
+        self._fail = fail
+        self._heartbeat_path = heartbeat_path
+        self.heartbeat_existed_when_called: list[bool] = []
+
+    async def observe(self, stats: object) -> None:
+        if self._heartbeat_path is not None:
+            self.heartbeat_existed_when_called.append(self._heartbeat_path.exists())
+        if self._fail:
+            raise RuntimeError("сбой в алертинге")
+        self.observed.append(stats)
+
+
+async def test_run_forever_passes_every_run_stats_to_alert_manager() -> None:
+    manager = _RecordingAlertManager()
+    pipeline = _StatsPipeline(stop_after=4)
+
+    await _run_forever(pipeline, 0, None, None, None, manager)  # type: ignore[arg-type]
+
+    assert [s.messages_fetched for s in manager.observed] == [1, 2, 3]  # type: ignore[attr-defined]
+
+
+async def test_alert_failure_neither_stops_loop_nor_blocks_heartbeat(tmp_path: Path) -> None:
+    path = tmp_path / "heartbeat"
+    pipeline = _StatsPipeline(stop_after=4)
+
+    await _run_forever(
+        pipeline,
+        0,
+        None,
+        path,
+        None,
+        _RecordingAlertManager(fail=True),  # type: ignore[arg-type]
+    )
+
+    assert pipeline.calls == 4
+    assert read_heartbeat(path) is not None
+
+
+async def test_heartbeat_is_written_before_alerts_are_processed(tmp_path: Path) -> None:
+    """Медленная доставка оповещения не должна ложно делать процесс unhealthy."""
+    path = tmp_path / "heartbeat"
+    manager = _RecordingAlertManager(heartbeat_path=path)
+    pipeline = _StatsPipeline(stop_after=3)
+
+    await _run_forever(pipeline, 0, None, path, None, manager)  # type: ignore[arg-type]
+
+    assert manager.heartbeat_existed_when_called == [True, True]
+
+
+async def test_run_forever_works_without_alert_manager() -> None:
+    pipeline = _StatsPipeline(stop_after=3)
+
+    await _run_forever(pipeline, 0, None, None, None, None)  # type: ignore[arg-type]
+
+    assert pipeline.calls == 3

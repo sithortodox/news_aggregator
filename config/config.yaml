@@ -6,6 +6,16 @@ pipeline:
   poll_interval_seconds: 60
   max_messages_per_source: 100
 
+# Оповещения владельцу в Telegram (через управляющего бота) о сбоях. Секция
+# необязательна — без неё действуют значения ниже. Опечатка в имени параметра
+# считается ошибкой конфигурации (см. --validate-config).
+alerts:
+  enabled: true
+  source_failure_threshold: 5     # источник упал N прогонов ПОДРЯД -> «не отвечает»
+  publish_failure_threshold: 1    # сбоев публикации подряд до оповещения
+  flood_wait_alert_seconds: 300   # FloodWait длиннее этого (с) -> оповещение
+  cooldown_seconds: 3600          # не чаще раза в час об одной и той же проблеме
+
 sources:
   # Самый простой способ добавить Telegram-канал — просто username строкой.
   # id, kind (telegram_channel) и display_name подставятся автоматически.

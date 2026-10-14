@@ -15,6 +15,7 @@ import yaml
 from dotenv import load_dotenv
 
 from news_aggregator.config.schema import (
+    AlertsConfig,
     AppConfig,
     ComponentConfig,
     PipelineConfig,
@@ -71,6 +72,61 @@ def _resolve_sources(raw_items: list[object]) -> tuple[Source, ...]:
     return tuple(sources)
 
 
+_ALERTS_KEYS = {
+    "enabled",
+    "source_failure_threshold",
+    "publish_failure_threshold",
+    "flood_wait_alert_seconds",
+    "cooldown_seconds",
+}
+
+
+def _parse_alerts(raw: object) -> AlertsConfig:
+    """Разбирает секцию `alerts`. Неизвестные ключи — ошибка: опечатка в
+    настройке защитного механизма не должна молча оставлять значение по умолчанию."""
+    if raw is None:
+        return AlertsConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError("Секция 'alerts' должна быть словарём")
+    unknown = sorted(set(raw) - _ALERTS_KEYS)
+    if unknown:
+        raise ConfigError(
+            f"Неизвестные параметры в 'alerts': {', '.join(map(str, unknown))}. "
+            f"Допустимые: {', '.join(sorted(_ALERTS_KEYS))}"
+        )
+
+    defaults = AlertsConfig()
+    enabled = raw.get("enabled", defaults.enabled)
+    if not isinstance(enabled, bool):
+        raise ConfigError("alerts.enabled должен быть true или false")
+
+    def positive_int(key: str, default: int) -> int:
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigError(f"alerts.{key} должен быть целым числом >= 1")
+        return value
+
+    def positive_number(key: str, default: float) -> float:
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            raise ConfigError(f"alerts.{key} должен быть положительным числом")
+        return float(value)
+
+    return AlertsConfig(
+        enabled=enabled,
+        source_failure_threshold=positive_int(
+            "source_failure_threshold", defaults.source_failure_threshold
+        ),
+        publish_failure_threshold=positive_int(
+            "publish_failure_threshold", defaults.publish_failure_threshold
+        ),
+        flood_wait_alert_seconds=positive_number(
+            "flood_wait_alert_seconds", defaults.flood_wait_alert_seconds
+        ),
+        cooldown_seconds=positive_number("cooldown_seconds", defaults.cooldown_seconds),
+    )
+
+
 def load_app_config(path: str | Path) -> AppConfig:
     """Читает и валидирует конфигурацию приложения из YAML-файла.
 
@@ -117,6 +173,8 @@ def load_app_config(path: str | Path) -> AppConfig:
     if not publishers:
         raise ConfigError("Должен быть указан хотя бы один издатель (publishers)")
 
+    alerts = _parse_alerts(raw.get("alerts"))
+
     return AppConfig(
         sources=sources,
         filters=filters,
@@ -125,6 +183,7 @@ def load_app_config(path: str | Path) -> AppConfig:
         publishers=publishers,
         storage=storage,
         pipeline=pipeline,
+        alerts=alerts,
     )
 
 

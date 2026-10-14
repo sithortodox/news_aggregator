@@ -64,3 +64,44 @@ async def test_validate_config_does_not_advance_cursor(tmp_path: Path) -> None:
     # и второй вызов --once не нашёл бы новых сообщений. Проверяем через сам
     # факт того, что второй вызов не падает и обрабатывает демо-сообщения
     # (более точная проверка стата вынесена в test_full_pipeline.py).
+
+
+async def test_validate_config_prints_alert_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{tmp_path / "s.db"}"')
+    config_text = config_text.replace("source_failure_threshold: 5", "source_failure_threshold: 7")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    exit_code = await _async_main(["--config", str(config_path), "--validate-config"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Оповещения: включены" in out
+    assert "источник: 7 подряд" in out
+
+
+async def test_validate_config_reports_disabled_alerts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
+    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{tmp_path / "s.db"}"')
+    config_text = config_text.replace("alerts:\n  enabled: true", "alerts:\n  enabled: false")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    await _async_main(["--config", str(config_path), "--validate-config"])
+
+    assert "Оповещения: выключены" in capsys.readouterr().out
+
+
+async def test_validate_config_fails_on_alerts_typo(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "sources: []\npublishers:\n  - name: console_publisher\nalerts:\n  cooldown_second: 5\n",
+        encoding="utf-8",
+    )
+
+    assert await _async_main(["--config", str(config_path), "--validate-config"]) == 1

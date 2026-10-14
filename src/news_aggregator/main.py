@@ -15,11 +15,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from news_aggregator.alerts import AlertManager
 from news_aggregator.bootstrap import build_registry
 from news_aggregator.config.loader import (
     ConfigError,
@@ -44,6 +44,7 @@ from news_aggregator.core.models import Source
 from news_aggregator.core.pipeline import AggregatorPipeline
 from news_aggregator.core.registry import ComponentNotRegisteredError, ComponentRegistry
 from news_aggregator.healthcheck import heartbeat_path_for_db, write_heartbeat
+from news_aggregator.redaction import redact_secrets
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -51,10 +52,6 @@ if TYPE_CHECKING:
     from news_aggregator.bot.telegram_bot import AggregatorBot as AggregatorBotType
 
 logger = logging.getLogger("news_aggregator")
-
-
-# Токен Telegram-бота: <числовой id>:<35 символов base64url>.
-_BOT_TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{30,}")
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -66,7 +63,7 @@ class _RedactingFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        return _BOT_TOKEN_RE.sub("<redacted>", super().format(record))
+        return redact_secrets(super().format(record))
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -383,6 +380,16 @@ def _print_validation_summary(config: AppConfig, sources: list[Source]) -> None:
     print("Конфигурация корректна.\n")
     print(f"Режим: {'dry-run' if config.pipeline.dry_run else 'РЕАЛЬНАЯ ПУБЛИКАЦИЯ'}")
     print(f"Интервал опроса: {config.pipeline.poll_interval_seconds} сек.")
+    alerts = config.alerts
+    if alerts.enabled:
+        print(
+            f"Оповещения: включены (источник: {alerts.source_failure_threshold} подряд, "
+            f"публикация: {alerts.publish_failure_threshold} подряд, "
+            f"FloodWait > {alerts.flood_wait_alert_seconds:g} с, "
+            f"cooldown {alerts.cooldown_seconds:g} с)"
+        )
+    else:
+        print("Оповещения: выключены")
     print(f"Хранилище: {config.storage.name} {config.storage.params or ''}".rstrip())
 
     print(f"\nИсточники ({len(sources)}):")
@@ -445,6 +452,7 @@ async def _run_forever(
     bot: AggregatorBotType | None,
     heartbeat_path: Path | None,
     stats_store: IRunStatsStore | None = None,
+    alert_manager: AlertManager | None = None,
 ) -> None:
     """Цикл постоянного опроса источников, опционально вместе с ботом
     управления каналами (оба крутятся в одном event loop).
@@ -454,6 +462,10 @@ async def _run_forever(
     обновляется heartbeat-файл (если heartbeat_path задан). По нему Docker
     HEALTHCHECK и внешний watchdog видят, что цикл жив и продвигается, а не
     завис. См. news_aggregator.healthcheck.
+
+    Оповещения (alert_manager) обрабатываются ПОСЛЕ heartbeat: доставка — это
+    сетевой вызов, и медленный Telegram не должен ложно сделать процесс
+    «нездоровым». Сбой обработки оповещений цикл не останавливает.
     """
     stop_event = asyncio.Event()
     bot_task = asyncio.create_task(bot.run(stop_event)) if bot is not None else None
@@ -468,6 +480,11 @@ async def _run_forever(
                     logger.exception("Не удалось сохранить статистику прогона")
             if heartbeat_path is not None:
                 write_heartbeat(heartbeat_path)
+            if alert_manager is not None:
+                try:
+                    await alert_manager.observe(stats)
+                except Exception:
+                    logger.exception("Сбой при обработке оповещений")
             await asyncio.sleep(poll_interval_seconds)
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Остановлено пользователем")
@@ -542,8 +559,23 @@ async def _async_main(argv: list[str] | None = None) -> int:
     )
     bot = _try_build_bot(secrets, source_repository, stats_store)
     heartbeat_path = heartbeat_path_for_db(Path(_shared_sqlite_db_path(config)))
+    alert_manager = AlertManager(config.alerts, sink=bot) if config.alerts.enabled else None
+    if alert_manager is None:
+        logger.info("Оповещения о сбоях выключены (alerts.enabled: false)")
+    elif bot is None:
+        logger.warning(
+            "Оповещения о сбоях включены, но бот управления не настроен: "
+            "они будут только в логе (задайте TELEGRAM_BOT_TOKEN и TELEGRAM_BOT_OWNER_ID)"
+        )
+    else:
+        logger.info("Оповещения о сбоях включены, доставка владельцу через бота")
     await _run_forever(
-        pipeline, config.pipeline.poll_interval_seconds, bot, heartbeat_path, stats_store
+        pipeline,
+        config.pipeline.poll_interval_seconds,
+        bot,
+        heartbeat_path,
+        stats_store,
+        alert_manager,
     )
     return 0
 
