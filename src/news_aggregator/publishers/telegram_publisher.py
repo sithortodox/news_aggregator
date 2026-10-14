@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
+from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.interfaces import IPublisher
 from news_aggregator.core.models import ProcessedMessage
 
@@ -45,27 +47,34 @@ class TelegramPublisher(IPublisher):
         formatting_entities = list(entities) if entities else None
         media = raw.media
 
-        if media is not None:
-            # send_file принимает media-объект напрямую (см. документацию
-            # Telethon: "A handle to an existing file... you can use its
-            # message.media as a file here") — Telegram копирует вложение
-            # на своей стороне, без скачивания и повторной загрузки файла
-            # агрегатором.
-            await self._client.send_file(
-                self._target_channel,
-                file=media.native_ref,
-                caption=text,
-                parse_mode=None,
-                formatting_entities=formatting_entities,
-            )
-        else:
-            await self._client.send_message(
-                self._target_channel,
-                text,
-                link_preview=bool(message.links),
-                parse_mode=None,
-                formatting_entities=formatting_entities,
-            )
+        try:
+            if media is not None:
+                # send_file принимает media-объект напрямую (см. документацию
+                # Telethon: "A handle to an existing file... you can use its
+                # message.media as a file here") — Telegram копирует вложение
+                # на своей стороне, без скачивания и повторной загрузки файла
+                # агрегатором.
+                await self._client.send_file(
+                    self._target_channel,
+                    file=media.native_ref,
+                    caption=text,
+                    parse_mode=None,
+                    formatting_entities=formatting_entities,
+                )
+            else:
+                await self._client.send_message(
+                    self._target_channel,
+                    text,
+                    link_preview=bool(message.links),
+                    parse_mode=None,
+                    formatting_entities=formatting_entities,
+                )
+        except FloodWaitError as exc:
+            # Длиннее flood_sleep_threshold Telethon (60 с) не пережидает сам.
+            # Пайплайн поставит паузу и повторит это сообщение после неё.
+            raise RateLimitedError(
+                exc.seconds, f"FloodWait {exc.seconds} с при публикации в {self._target_channel}"
+            ) from exc
 
         logger.info(
             "Опубликовано в Telegram: %s/%s -> %s (медиа: %s, entities: %d)",

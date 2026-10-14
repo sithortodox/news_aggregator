@@ -11,6 +11,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+from telethon.errors import FloodWaitError
+
+from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.models import Source, SourceKind
 from news_aggregator.sources.telegram_source import TelegramSourceReader
 
@@ -274,3 +278,106 @@ async def test_no_entities_gives_empty_tuple() -> None:
     results = [r async for r in reader.read_new_messages(_tg_source(), "0")]
 
     assert results[0].formatting_entities == ()
+
+
+# ------------------------------------------------------------------ FloodWait
+
+
+def _flood(seconds: int) -> FloodWaitError:
+    return FloodWaitError(request=None, capture=seconds)
+
+
+class _FloodingClient(_FakeTelethonClient):
+    """Клиент, который падает с FloodWait на выбранном шаге."""
+
+    def __init__(
+        self,
+        messages: list[_FakeTgMessage],
+        *,
+        on_get_entity: Exception | None = None,
+        on_get_messages: Exception | None = None,
+        on_iter_after: tuple[int, Exception] | None = None,
+    ) -> None:
+        super().__init__(messages)
+        self._on_get_entity = on_get_entity
+        self._on_get_messages = on_get_messages
+        self._on_iter_after = on_iter_after
+
+    async def get_entity(self, identifier: str) -> object:
+        if self._on_get_entity is not None:
+            raise self._on_get_entity
+        return await super().get_entity(identifier)
+
+    async def get_messages(self, entity: object, limit: int = 1) -> list[_FakeTgMessage]:
+        if self._on_get_messages is not None:
+            raise self._on_get_messages
+        return await super().get_messages(entity, limit)
+
+    async def iter_messages(self, entity: object, min_id: int = 0, reverse: bool = True):
+        yielded = 0
+        async for msg in super().iter_messages(entity, min_id, reverse):
+            if self._on_iter_after is not None and yielded >= self._on_iter_after[0]:
+                raise self._on_iter_after[1]
+            yielded += 1
+            yield msg
+
+
+async def _drain(reader: TelegramSourceReader, since: str | None) -> list[str]:
+    return [m.external_id async for m in reader.read_new_messages(_tg_source(), since)]
+
+
+async def test_floodwait_on_get_entity_becomes_rate_limited_error() -> None:
+    reader = TelegramSourceReader(_FloodingClient([], on_get_entity=_flood(420)))  # type: ignore[arg-type]
+
+    with pytest.raises(RateLimitedError) as info:
+        await _drain(reader, "0")
+
+    assert info.value.retry_after_seconds == 420
+    assert isinstance(info.value.__cause__, FloodWaitError)
+
+
+async def test_floodwait_on_first_read_latest_message_lookup() -> None:
+    reader = TelegramSourceReader(_FloodingClient([], on_get_messages=_flood(90)))  # type: ignore[arg-type]
+
+    with pytest.raises(RateLimitedError) as info:
+        await _drain(reader, None)  # курсора нет -> get_messages(limit=1)
+
+    assert info.value.retry_after_seconds == 90
+
+
+async def test_floodwait_in_the_middle_of_iteration_keeps_already_yielded_messages() -> None:
+    now = datetime.now(tz=UTC)
+    messages = [_FakeTgMessage(i, f"Сообщение номер {i}", now) for i in (1, 2, 3)]
+    reader = TelegramSourceReader(
+        _FloodingClient(messages, on_iter_after=(2, _flood(300)))  # type: ignore[arg-type]
+    )
+    received: list[str] = []
+
+    with pytest.raises(RateLimitedError) as info:
+        async for msg in reader.read_new_messages(_tg_source(), "0"):
+            received.append(msg.external_id)
+
+    assert received == ["1", "2"]  # то, что успели отдать, не теряется
+    assert info.value.retry_after_seconds == 300
+
+
+async def test_other_errors_are_not_converted_to_rate_limit() -> None:
+    reader = TelegramSourceReader(
+        _FloodingClient([], on_get_entity=ValueError("нет такого канала"))  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError):
+        await _drain(reader, "0")
+
+
+async def test_early_stop_by_consumer_closes_underlying_generator() -> None:
+    now = datetime.now(tz=UTC)
+    client = _FakeTelethonClient(
+        [_FakeTgMessage(i, f"Сообщение номер {i}", now) for i in (1, 2, 3)]
+    )
+    reader = TelegramSourceReader(client)  # type: ignore[arg-type]
+
+    async for _ in reader.read_new_messages(_tg_source(), "0"):
+        break  # как при достижении max_messages_per_source
+
+    assert client.iter_calls == [(0, True)]

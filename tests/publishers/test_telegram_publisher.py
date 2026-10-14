@@ -182,3 +182,53 @@ async def test_publish_with_media_also_appends_footer_and_entities() -> None:
 def test_empty_target_channel_raises() -> None:
     with pytest.raises(ValueError):
         TelegramPublisher(_FakeTelethonClient(), target_channel="")
+
+
+# ------------------------------------------------------------------ FloodWait
+
+
+async def test_floodwait_on_send_message_becomes_rate_limited_error() -> None:
+    from telethon.errors import FloodWaitError
+
+    from news_aggregator.core.errors import RateLimitedError
+
+    class _Flooding(_FakeTelethonClient):
+        async def send_message(self, *args: Any, **kwargs: Any) -> None:
+            raise FloodWaitError(request=None, capture=180)
+
+    publisher = TelegramPublisher(_Flooding(), target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(RateLimitedError) as info:
+        await publisher.publish(_make_message("Текст новости"))
+
+    assert info.value.retry_after_seconds == 180
+    assert "@target" in str(info.value)
+
+
+async def test_floodwait_on_send_file_becomes_rate_limited_error() -> None:
+    from telethon.errors import FloodWaitError
+
+    from news_aggregator.core.errors import RateLimitedError
+
+    class _Flooding(_FakeTelethonClient):
+        async def send_file(self, *args: Any, **kwargs: Any) -> None:
+            raise FloodWaitError(request=None, capture=45)
+
+    publisher = TelegramPublisher(_Flooding(), target_channel="@target")  # type: ignore[arg-type]
+    media = MediaAttachment(kind="photo", native_ref=object())
+
+    with pytest.raises(RateLimitedError) as info:
+        await publisher.publish(_make_message("С фото", media=media))
+
+    assert info.value.retry_after_seconds == 45
+
+
+async def test_other_publish_errors_are_not_converted() -> None:
+    class _Broken(_FakeTelethonClient):
+        async def send_message(self, *args: Any, **kwargs: Any) -> None:
+            raise ValueError("chat not found")
+
+    publisher = TelegramPublisher(_Broken(), target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        await publisher.publish(_make_message("Текст"))

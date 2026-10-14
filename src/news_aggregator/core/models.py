@@ -153,6 +153,16 @@ class PipelineStats:
     messages_duplicate: int = 0
     messages_published: int = 0
     errors: list[str] = field(default_factory=list)
+    # Поля ниже нужны алертингу: по одним счётчикам нельзя понять, КАКОЙ
+    # источник сбоит и работает ли издатель.
+    publish_failures: int = 0
+    publish_error: str | None = None
+    # Самая длинная пауза по ограничению частоты запросов, случившаяся именно
+    # в этом прогоне (0 — не было). Пропущенные из-за паузы прогоны её не ставят.
+    flood_wait_seconds: float = 0.0
+    failed_sources: list[str] = field(default_factory=list)
+    succeeded_sources: list[str] = field(default_factory=list)
+    source_errors: dict[str, str] = field(default_factory=dict)
 
     def add_error(self, message: str) -> None:
         """Регистрирует ошибку, не прерывая выполнение пайплайна."""

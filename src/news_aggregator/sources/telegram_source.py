@@ -9,11 +9,14 @@ FakeSourceReader.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 from datetime import UTC, datetime
 
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
+from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.interfaces import ISourceReader
 from news_aggregator.core.models import MediaAttachment, RawMessage, Source, SourceKind
 
@@ -40,10 +43,30 @@ class TelegramSourceReader(ISourceReader):
     async def read_new_messages(
         self, source: Source, since_external_id: str | None
     ) -> AsyncIterator[RawMessage]:
+        """Отдаёт новые сообщения; FloodWait Telegram переводит в RateLimitedError.
+
+        Telethon сам молча пережидает FloodWait до flood_sleep_threshold (по
+        умолчанию 60 с). Сюда доходят только более длинные — их пайплайн
+        обрабатывает паузой, а не повторами (повторы только удлиняют FloodWait).
+        """
+        try:
+            async with aclosing(self._read(source, since_external_id)) as messages:
+                async for message in messages:
+                    yield message
+        except FloodWaitError as exc:
+            raise RateLimitedError(
+                exc.seconds, f"FloodWait {exc.seconds} с при чтении '{source.id}'"
+            ) from exc
+
+    async def _read(
+        self, source: Source, since_external_id: str | None
+    ) -> AsyncGenerator[RawMessage, None]:
         fetched_at = datetime.now(tz=UTC)
 
         try:
             entity = await self._client.get_entity(source.identifier)
+        except FloodWaitError:
+            raise  # не «не удалось получить сущность»: обработает read_new_messages
         except Exception:
             logger.exception(
                 "Не удалось получить сущность Telegram для источника '%s' (%s)",
