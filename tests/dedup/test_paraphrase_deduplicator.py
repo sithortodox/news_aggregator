@@ -154,3 +154,105 @@ def test_non_positive_min_lemmas_raises() -> None:
 
 def test_name_property() -> None:
     assert ParaphraseDeduplicator(InMemoryLemmaIndex()).name == "paraphrase_deduplicator"
+
+
+# ------------------------------------------------- основы, минимум общих, вето по числам
+
+
+def _d(**params: object) -> ParaphraseDeduplicator:
+    return ParaphraseDeduplicator(InMemoryLemmaIndex(), **params)  # type: ignore[arg-type]
+
+
+def _words(suffix: str, count: int) -> set[str]:
+    # Номер в НАЧАЛЕ слова: иначе усечение до основы склеило бы все слова в одно.
+    return {f"{i:02d}{suffix}" for i in range(count)}
+
+
+def test_jaccard_threshold_is_inclusive() -> None:
+    common = _words("общ", 3)
+    a = frozenset(common | _words("аа", 6))
+    b = frozenset(common | _words("бб", 6))  # 3 общих из 15 в объединении = ровно 0.2
+    dedup = _d(min_jaccard=0.2, stem_length=None, min_shared_lemmas=1, number_veto=False)
+
+    assert dedup._compare(a, b)[0] is True
+    assert _d(min_jaccard=0.21, stem_length=None, min_shared_lemmas=1)._compare(a, b)[0] is False
+
+
+def test_stems_merge_related_word_forms() -> None:
+    a = frozenset({"канада", "хоккей", "победить", "финал"})
+    b = frozenset({"канадец", "хоккейный", "победа", "финальный"})
+
+    assert _d(stem_length=5, min_shared_lemmas=3)._compare(a, b)[0] is True
+    assert _d(stem_length=None, min_shared_lemmas=1)._compare(a, b)[0] is False
+
+
+def test_stems_do_not_touch_numbers_or_short_words() -> None:
+    a = frozenset({"2022", "курс", "доллар"})
+    b = frozenset({"2022", "курс", "доллар"})
+
+    assert _d(stem_length=3, min_shared_lemmas=3)._compare(a, b)[0] is True
+
+
+def test_min_shared_lemmas_blocks_a_lucky_match_on_short_texts() -> None:
+    a = frozenset({"ключевой", "ставка", "повысить", "цб"})
+    b = frozenset({"ключевой", "ставка", "сохранить", "решение"})  # 2 общих из 6: Жаккар 0.33
+
+    assert _d(min_shared_lemmas=2, number_veto=False)._compare(a, b)[0] is True
+    assert _d(min_shared_lemmas=3)._compare(a, b)[0] is False
+
+
+def test_number_veto_blocks_when_both_have_numbers_and_none_match() -> None:
+    a = frozenset({"ставка", "повысить", "ключевой", "цб", "18"})
+    b = frozenset({"ставка", "повысить", "ключевой", "цб", "19"})
+
+    assert _d()._compare(a, b)[0] is False
+    assert _d(number_veto=False)._compare(a, b)[0] is True
+
+
+def test_number_veto_allows_a_shared_number() -> None:
+    a = frozenset({"ставка", "повысить", "ключевой", "цб", "18", "200"})
+    b = frozenset({"ставка", "повысить", "ключевой", "цб", "18"})
+
+    assert _d()._compare(a, b)[0] is True
+
+
+def test_number_veto_does_not_apply_when_only_one_text_has_numbers() -> None:
+    """Пересказ может записать число словами — это не конфликт."""
+    a = frozenset({"ставка", "повысить", "ключевой", "цб", "18"})
+    b = frozenset({"ставка", "повысить", "ключевой", "цб", "восемнадцать"})
+
+    assert _d()._compare(a, b)[0] is True
+
+
+def test_min_overlap_is_off_by_default_and_catches_headline_vs_long_text_when_enabled() -> None:
+    headline = frozenset({"цб", "повысить", "ключевой", "ставка", "годовой"})
+    long_text = frozenset(headline | _words("слово", 25))
+
+    strict = _d(min_jaccard=0.4)
+    assert strict._compare(headline, long_text)[0] is False
+    assert _d(min_jaccard=0.4, min_overlap=0.8)._compare(headline, long_text)[0] is True
+
+
+def test_min_overlap_still_requires_minimum_shared_lemmas() -> None:
+    small = frozenset({"аа", "бб"})
+    big = frozenset(small | _words("слово", 30))
+
+    assert _d(min_jaccard=0.9, min_overlap=0.5, stem_length=None)._compare(small, big)[0] is False
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"stem_length": 1},
+        {"min_shared_lemmas": 0},
+        {"min_overlap": 0.0},
+        {"min_overlap": 1.5},
+    ],
+)
+def test_new_parameters_are_validated(params: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        _d(**params)
+
+
+def test_stem_length_none_means_no_truncation() -> None:
+    _d(stem_length=None)  # не должно падать
