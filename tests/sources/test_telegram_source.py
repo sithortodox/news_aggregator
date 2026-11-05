@@ -1,7 +1,7 @@
 """Тесты TelegramSourceReader.
 
 Используется лёгкий тестовый двойник клиента с интерфейсом, совместимым с
-Telethon (get_entity/iter_messages), а не настоящий Telethon и не реальный
+Telethon (get_input_entity/iter_messages), а не настоящий Telethon и не реальный
 Telegram — согласно требованию "не использовать реальный Telegram в
 юнит-тестах".
 """
@@ -47,8 +47,17 @@ class _FakeTelethonClient:
         self.get_entity_calls: list[str] = []
         self.iter_calls: list[tuple[int, bool]] = []
         self.get_messages_calls: list[int] = []
+        self.connected = True
+        self.connect_calls = 0
 
-    async def get_entity(self, identifier: str) -> object:
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        self.connected = True
+
+    async def get_input_entity(self, identifier: str) -> object:
         self.get_entity_calls.append(identifier)
         return SimpleNamespace(name=identifier)
 
@@ -303,10 +312,10 @@ class _FloodingClient(_FakeTelethonClient):
         self._on_get_messages = on_get_messages
         self._on_iter_after = on_iter_after
 
-    async def get_entity(self, identifier: str) -> object:
+    async def get_input_entity(self, identifier: str) -> object:
         if self._on_get_entity is not None:
             raise self._on_get_entity
-        return await super().get_entity(identifier)
+        return await super().get_input_entity(identifier)
 
     async def get_messages(self, entity: object, limit: int = 1) -> list[_FakeTgMessage]:
         if self._on_get_messages is not None:
@@ -381,3 +390,54 @@ async def test_early_stop_by_consumer_closes_underlying_generator() -> None:
         break  # как при достижении max_messages_per_source
 
     assert client.iter_calls == [(0, True)]
+
+
+# ------------------------------------------------- восстановление соединения
+
+
+async def test_reconnects_when_telethon_gave_up() -> None:
+    now = datetime.now(tz=UTC)
+    client = _FakeTelethonClient([_FakeTgMessage(1, "Сообщение после обрыва", now)])
+    client.connected = False
+    reader = TelegramSourceReader(client)  # type: ignore[arg-type]
+
+    results = [r async for r in reader.read_new_messages(_tg_source(), "0")]
+
+    assert client.connect_calls == 1
+    assert [r.external_id for r in results] == ["1"]
+
+
+async def test_does_not_reconnect_a_live_client() -> None:
+    client = _FakeTelethonClient([])
+    reader = TelegramSourceReader(client)  # type: ignore[arg-type]
+
+    await _drain(reader, "0")
+
+    assert client.connect_calls == 0
+
+
+async def test_failed_reconnect_fails_the_source_and_next_run_retries() -> None:
+    class _NoNetwork(_FakeTelethonClient):
+        async def connect(self) -> None:
+            self.connect_calls += 1
+            raise ConnectionError("нет сети")
+
+    client = _NoNetwork([])
+    client.connected = False
+    reader = TelegramSourceReader(client)  # type: ignore[arg-type]
+
+    for _ in range(2):
+        with pytest.raises(ConnectionError):
+            await _drain(reader, "0")
+
+    assert client.connect_calls == 2
+
+
+async def test_channel_is_resolved_on_every_read_through_the_session_cache() -> None:
+    client = _FakeTelethonClient([])
+    reader = TelegramSourceReader(client)  # type: ignore[arg-type]
+
+    await _drain(reader, "0")
+
+    assert client.get_entity_calls == ["@ch1"]
+    assert not hasattr(client, "get_entity")

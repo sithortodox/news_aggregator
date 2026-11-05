@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 from news_aggregator.core.models import ProcessedMessage, RawMessage
 from news_aggregator.core.text_utils import compute_text_hash, extract_links, normalize_text
@@ -137,3 +138,72 @@ async def test_remember_stores_canonical_form_only() -> None:
 
     assert await storage.has_link("example.com/a") is True
     assert await storage.has_link("https://www.example.com/a/?utm_source=x") is False
+
+
+# ------------------------------------------------------- гиперссылки на словах
+
+
+def _with_hyperlink(url: str, source_id: str, external_id: str = "1") -> ProcessedMessage:
+    text = f"Новость из канала {source_id}. Подробнее"
+    raw = RawMessage(
+        source_id=source_id,
+        external_id=external_id,
+        text=text,
+        posted_at=datetime.now(),
+        fetched_at=datetime.now(),
+        formatting_entities=(SimpleNamespace(url=url),),
+    )
+    normalized = normalize_text(text)
+    return ProcessedMessage(
+        raw=raw,
+        normalized_text=normalized,
+        text_hash=compute_text_hash(normalized),
+        links=extract_links(text),
+    )
+
+
+async def test_hyperlink_from_another_source_is_duplicate() -> None:
+    dedup = LinkDeduplicator(InMemoryStorage())
+    await dedup.remember(_with_hyperlink("https://example.com/article", "src1"))
+
+    result = await dedup.check(_with_hyperlink("https://www.example.com/article/", "src2"))
+
+    assert result.is_duplicate is True
+    assert result.matched_link == "https://www.example.com/article/"
+
+
+async def test_hyperlink_matches_a_visible_link_of_another_source() -> None:
+    dedup = LinkDeduplicator(InMemoryStorage())
+    await dedup.remember(_make_message("Новость https://example.com/article"))
+
+    result = await dedup.check(_with_hyperlink("https://example.com/article", "src2"))
+
+    assert result.is_duplicate is True
+
+
+async def test_visible_link_matches_a_hyperlink_of_another_source() -> None:
+    dedup = LinkDeduplicator(InMemoryStorage())
+    await dedup.remember(_with_hyperlink("https://example.com/article", "src2"))
+
+    result = await dedup.check(_make_message("Новость https://example.com/article"))
+
+    assert result.is_duplicate is True
+
+
+async def test_channel_signature_hidden_in_a_word_does_not_block_its_own_posts() -> None:
+    """«Мы в VK» под каждым постом: у ссылки есть путь, но это не материал."""
+    dedup = LinkDeduplicator(InMemoryStorage())
+    await dedup.remember(_with_hyperlink("https://vk.com/channel", "src1", external_id="1"))
+
+    result = await dedup.check(_with_hyperlink("https://vk.com/channel", "src1", external_id="2"))
+
+    assert result.is_duplicate is False
+
+
+async def test_hyperlink_to_channel_profile_is_ignored() -> None:
+    dedup = LinkDeduplicator(InMemoryStorage())
+    await dedup.remember(_with_hyperlink("https://t.me/channel", "src1"))
+
+    result = await dedup.check(_with_hyperlink("https://t.me/channel", "src2"))
+
+    assert result.is_duplicate is False

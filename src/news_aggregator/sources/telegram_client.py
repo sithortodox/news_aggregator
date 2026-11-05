@@ -8,11 +8,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from telethon import TelegramClient
 
 from news_aggregator.config.loader import TelegramSecrets
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramSecretsMissingError(RuntimeError):
@@ -40,3 +43,20 @@ def build_telegram_client(secrets: TelegramSecrets) -> TelegramClient:
         session_path.parent.mkdir(parents=True, exist_ok=True)
 
     return TelegramClient(secrets.session_name, secrets.api_id, secrets.api_hash)
+
+
+async def ensure_connected(client: TelegramClient) -> None:
+    """Подключает клиент заново, если Telethon сдался и разорвал соединение.
+
+    Сам Telethon переподключается лишь ограниченное число попыток. После этого
+    он считает клиент отключённым, и каждый запрос падает с ConnectionError,
+    пока кто-то не вызовет connect() — без этого вызова агрегатор не пережил бы
+    обрыв сети длиннее минуты. Пока Telethon сам восстанавливает связь,
+    is_connected() возвращает True, и здесь ничего не происходит.
+
+    Сбой подключения пробрасывается: каждый вызывающий обрабатывает его так же,
+    как любую другую недоступность Telegram, а следующий прогон попробует снова.
+    """
+    if not client.is_connected():
+        logger.warning("Соединение с Telegram разорвано, подключаюсь заново")
+        await client.connect()

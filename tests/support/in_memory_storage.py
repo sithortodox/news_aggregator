@@ -13,7 +13,7 @@ class InMemoryStorage(IStorage):
     def __init__(self) -> None:
         self._cursors: dict[str, str] = {}
         self._hashes: set[str] = set()
-        self._links: set[str] = set()
+        self._links: dict[str, str] = {}
 
     async def get_last_external_id(self, source_id: str) -> str | None:
         return self._cursors.get(source_id)
@@ -30,8 +30,11 @@ class InMemoryStorage(IStorage):
     async def has_link(self, link: str) -> bool:
         return link in self._links
 
+    async def get_link_source(self, link: str) -> str | None:
+        return self._links.get(link)
+
     async def save_link(self, link: str, source_id: str, external_id: str) -> None:
-        self._links.add(link)
+        self._links.setdefault(link, source_id)
 
     async def close(self) -> None:
         pass

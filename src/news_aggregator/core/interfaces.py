@@ -133,6 +133,10 @@ class IStorage(ABC):
         """Проверяет, встречалась ли ранее такая ссылка."""
 
     @abstractmethod
+    async def get_link_source(self, link: str) -> str | None:
+        """Возвращает source_id, с которым ссылка сохранена, или None, если её нет."""
+
+    @abstractmethod
     async def save_link(self, link: str, source_id: str, external_id: str) -> None:
         """Сохраняет ссылку опубликованного сообщения."""
 

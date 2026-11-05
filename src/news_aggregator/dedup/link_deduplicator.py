@@ -9,12 +9,19 @@
 страница сайта, профиль канала `t.me/channel`) вообще не участвуют: такая
 подпись есть почти в каждом посте канала, и иначе все посты после первого
 считались бы дублями.
+
+Гиперссылки на словах («Подробнее») проверяются тоже, но мягче: совпадение
+считается дублем, только если ссылка пришла из ДРУГОГО источника. Под такими
+словами часто прячется подпись канала («Мы в VK» -> vk.com/channel): у неё есть
+путь, канонизация её не отсеет, и без этого правила все посты канала после
+первого стали бы дублями. Первоисточник, на который сослались два разных канала,
+при этом находится.
 """
 
 from __future__ import annotations
 
 from news_aggregator.core.interfaces import IDeduplicator, IStorage
-from news_aggregator.core.links import canonical_content_links
+from news_aggregator.core.links import canonical_content_links, entity_urls
 from news_aggregator.core.models import DeduplicationResult, ProcessedMessage
 
 
@@ -41,10 +48,23 @@ class LinkDeduplicator(IDeduplicator):
                     reason=f"ссылка уже встречалась ранее: {raw}",
                     matched_link=raw,
                 )
+
+        visible = {canonical for _, canonical in canonical_content_links(message.links)}
+        for raw, canonical in canonical_content_links(entity_urls(message)):
+            if canonical in visible:
+                continue
+            seen_in = await self._storage.get_link_source(canonical)
+            if seen_in is not None and seen_in != message.raw.source_id:
+                return DeduplicationResult(
+                    is_duplicate=True,
+                    reason=f"гиперссылка уже встречалась в источнике {seen_in}: {raw}",
+                    matched_link=raw,
+                )
         return DeduplicationResult(is_duplicate=False, reason="ссылки новые или отсутствуют")
 
     async def remember(self, message: ProcessedMessage) -> None:
-        for _, canonical in canonical_content_links(message.links):
+        links = (*message.links, *entity_urls(message))
+        for _, canonical in canonical_content_links(links):
             await self._storage.save_link(
                 canonical,
                 source_id=message.raw.source_id,

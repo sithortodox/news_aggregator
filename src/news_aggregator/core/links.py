@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from news_aggregator.core.models import ProcessedMessage
+
 _TRACKING_PREFIXES = ("utm_",)
 _TRACKING_PARAMS = frozenset(
     {
@@ -91,6 +93,20 @@ def canonicalize_url(url: str) -> str | None:
     netloc = f"{host}:{port}" if port and port not in _DEFAULT_PORTS else host
     canonical = f"{netloc}/{'/'.join(segments)}"
     return f"{canonical}?{urlencode(query)}" if query else canonical
+
+
+def entity_urls(message: ProcessedMessage) -> list[str]:
+    """URL гиперссылок на словах («Подробнее»), которых нет в самом тексте.
+
+    Ядро не знает про Telegram, поэтому у каждого объекта форматирования
+    (у Telethon — MessageEntityTextUrl) берётся строковый атрибут `url`, если он есть.
+    """
+    urls: list[str] = []
+    for entity in message.raw.formatting_entities:
+        url = getattr(entity, "url", None)
+        if isinstance(url, str) and url:
+            urls.append(url)
+    return urls
 
 
 def canonical_content_links(links: Iterable[str]) -> tuple[tuple[str, str], ...]:

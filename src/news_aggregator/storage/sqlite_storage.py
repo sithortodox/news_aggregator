@@ -113,6 +113,15 @@ class SqliteStorage(IStorage):
         cursor = self._conn.execute("SELECT 1 FROM seen_links WHERE link = ?", (link,))
         return cursor.fetchone() is not None
 
+    async def get_link_source(self, link: str) -> str | None:
+        async with self._lock:
+            return await asyncio.to_thread(self._get_link_source_sync, link)
+
+    def _get_link_source_sync(self, link: str) -> str | None:
+        cursor = self._conn.execute("SELECT source_id FROM seen_links WHERE link = ?", (link,))
+        row = cursor.fetchone()
+        return row[0] if row else None
+
     async def save_link(self, link: str, source_id: str, external_id: str) -> None:
         async with self._lock:
             await asyncio.to_thread(self._save_link_sync, link, source_id, external_id)

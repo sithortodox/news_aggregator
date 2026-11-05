@@ -12,6 +12,15 @@ class _FakeTelethonClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
         self.sent_files: list[dict[str, Any]] = []
+        self.connected = True
+        self.connect_calls = 0
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        self.connected = True
 
     async def send_message(
         self,
@@ -276,6 +285,30 @@ async def test_unavailable_on_send_file_is_converted_too() -> None:
 
     with pytest.raises(PublishUnavailableError):
         await publisher.publish(message)
+
+
+async def test_reconnects_before_publishing_when_telethon_gave_up() -> None:
+    client = _FakeTelethonClient()
+    client.connected = False
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+
+    await publisher.publish(_make_message("Текст"))
+
+    assert client.connect_calls == 1
+    assert len(client.sent) == 1
+
+
+async def test_failed_reconnect_means_publisher_is_unavailable() -> None:
+    class _NoNetwork(_FakeTelethonClient):
+        async def connect(self) -> None:
+            raise ConnectionError("нет сети")
+
+    client = _NoNetwork()
+    client.connected = False
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(PublishUnavailableError):
+        await publisher.publish(_make_message("Текст"))
 
 
 def _message_level_errors() -> list[Exception]:

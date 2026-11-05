@@ -19,6 +19,7 @@ from telethon.errors import FloodWaitError
 from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.interfaces import ISourceReader
 from news_aggregator.core.models import MediaAttachment, RawMessage, Source, SourceKind
+from news_aggregator.sources.telegram_client import ensure_connected
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,13 @@ class TelegramSourceReader(ISourceReader):
     ) -> AsyncGenerator[RawMessage, None]:
         fetched_at = datetime.now(tz=UTC)
 
+        await ensure_connected(self._client)
+
         try:
-            entity = await self._client.get_entity(source.identifier)
+            # Не get_entity: со строкой он при каждом вызове отправляет
+            # ResolveUsernameRequest, а этот запрос Telegram лимитирует жёстко.
+            # get_input_entity берёт канал из кэша сессии, в сеть идёт один раз.
+            entity = await self._client.get_input_entity(source.identifier)
         except FloodWaitError:
             raise  # не «не удалось получить сущность»: обработает read_new_messages
         except Exception:

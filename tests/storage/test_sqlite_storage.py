@@ -54,6 +54,15 @@ async def test_link_roundtrip(storage: SqliteStorage) -> None:
     assert await storage.has_link("https://example.com/x") is True
 
 
+async def test_link_source_is_the_first_one_that_saved_it(storage: SqliteStorage) -> None:
+    assert await storage.get_link_source("https://example.com/x") is None
+
+    await storage.save_link("https://example.com/x", source_id="src1", external_id="1")
+    await storage.save_link("https://example.com/x", source_id="src2", external_id="2")
+
+    assert await storage.get_link_source("https://example.com/x") == "src1"
+
+
 async def test_creates_db_file_and_parent_dirs(tmp_path: Path) -> None:
     nested_path = tmp_path / "nested" / "dir" / "state.db"
     storage = SqliteStorage(db_path=str(nested_path))

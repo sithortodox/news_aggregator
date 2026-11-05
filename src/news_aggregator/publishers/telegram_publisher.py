@@ -27,6 +27,7 @@ from telethon.errors import (
 from news_aggregator.core.errors import PublishUnavailableError, RateLimitedError
 from news_aggregator.core.interfaces import IPublisher
 from news_aggregator.core.models import ProcessedMessage
+from news_aggregator.sources.telegram_client import ensure_connected
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class TelegramPublisher(IPublisher):
         media = raw.media
 
         try:
+            await ensure_connected(self._client)
             if media is not None:
                 # send_file принимает media-объект напрямую (см. документацию
                 # Telethon: "A handle to an existing file... you can use its
