@@ -2,8 +2,14 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from telethon.errors import FloodWaitError
+from telethon.tl.types import MessageEntityTextUrl
 
-from news_aggregator.core.errors import PublishUnavailableError
+from news_aggregator.core.errors import (
+    PartialPublishError,
+    PublishUnavailableError,
+    RateLimitedError,
+)
 from news_aggregator.core.models import MediaAttachment, ProcessedMessage, RawMessage
 from news_aggregator.publishers.telegram_publisher import TelegramPublisher
 
@@ -331,3 +337,159 @@ async def test_message_level_errors_are_not_retried(error: Exception) -> None:
 
     with pytest.raises(type(error)):
         await publisher.publish(_make_message("Текст"))
+
+
+# ------------------------------------------------------------- длинные посты
+
+_FOOTER = "\n\nИсточник: Канал"
+_PHOTO = MediaAttachment(kind="photo", native_ref="photo")
+
+
+def _utf16(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _words(length: int) -> str:
+    return ("слово " * (length // 6 + 1))[: length - 1] + "."
+
+
+async def _publish(text: str, **kwargs: Any) -> _FakeTelethonClient:
+    client = _FakeTelethonClient()
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+    await publisher.publish(_make_message(text, source_display_name="Канал", **kwargs))
+    return client
+
+
+async def test_text_exactly_at_the_limit_stays_one_message() -> None:
+    text = _words(4096 - len(_FOOTER))
+
+    client = await _publish(text)
+
+    assert [m["text"] for m in client.sent] == [text + _FOOTER]
+
+
+async def test_long_text_is_split_without_losing_anything() -> None:
+    text = _words(10000)
+
+    client = await _publish(text)
+
+    assert len(client.sent) == 3
+    assert all(_utf16(m["text"]) <= 4096 for m in client.sent)
+    assert "".join(m["text"] for m in client.sent) == text + _FOOTER
+
+
+async def test_footer_is_not_torn_off_into_its_own_message() -> None:
+    client = await _publish(_words(4090))
+
+    assert len(client.sent) == 2
+    assert client.sent[-1]["text"].endswith(_FOOTER)
+    assert client.sent[-1]["text"] != _FOOTER.lstrip()
+    assert _FOOTER not in client.sent[0]["text"]
+
+
+async def test_length_is_counted_in_utf16_units() -> None:
+    client = await _publish("😀 " * 1500)  # 3000 символов, но 4500 единиц UTF-16
+
+    assert len(client.sent) == 2
+    assert all(_utf16(m["text"]) <= 4096 for m in client.sent)
+
+
+async def test_hyperlink_in_the_tail_keeps_pointing_at_its_word() -> None:
+    head = _words(5000)
+    text = f"{head} Подробнее"
+    url = "https://example.com/a"
+    entity = MessageEntityTextUrl(offset=len(head) + 1, length=len("Подробнее"), url=url)
+
+    client = await _publish(text, formatting_entities=(entity,))
+
+    assert client.sent[0]["formatting_entities"] is None
+    last = client.sent[-1]
+    (moved,) = last["formatting_entities"]
+    assert moved.url == url
+    assert last["text"][moved.offset : moved.offset + moved.length] == "Подробнее"
+
+
+async def test_link_preview_only_on_the_first_part() -> None:
+    client = await _publish(_words(5000), links=("https://example.com/a",))
+
+    assert [m["link_preview"] for m in client.sent] == [True, False]
+
+
+async def test_caption_exactly_at_the_limit_stays_a_caption() -> None:
+    text = _words(1024 - len(_FOOTER))
+
+    client = await _publish(text, media=_PHOTO)
+
+    assert [f["caption"] for f in client.sent_files] == [text + _FOOTER]
+    assert client.sent == []
+
+
+async def test_text_over_the_caption_limit_follows_the_media() -> None:
+    text = _words(1500)
+    entity = MessageEntityTextUrl(offset=0, length=5, url="https://example.com/a")
+
+    client = await _publish(text, media=_PHOTO, formatting_entities=(entity,))
+
+    assert client.sent_files[0]["caption"] == ""
+    assert client.sent_files[0]["formatting_entities"] is None
+    assert [m["text"] for m in client.sent] == [text + _FOOTER]
+    assert client.sent[0]["formatting_entities"] == [entity]
+    assert client.sent[0]["link_preview"] is False
+
+
+async def test_media_with_text_over_the_message_limit() -> None:
+    text = _words(6000)
+
+    client = await _publish(text, media=_PHOTO)
+
+    assert len(client.sent_files) == 1
+    assert "".join(m["text"] for m in client.sent) == text + _FOOTER
+    assert len(client.sent) == 2
+
+
+class _FailsOnSend(_FakeTelethonClient):
+    """Падает на send_message с заданным порядковым номером (с единицы)."""
+
+    def __init__(self, failing_call: int, error: Exception) -> None:
+        super().__init__()
+        self._failing_call = failing_call
+        self._error = error
+        self._calls = 0
+
+    async def send_message(self, *args: Any, **kwargs: Any) -> None:
+        self._calls += 1
+        if self._calls == self._failing_call:
+            raise self._error
+        await super().send_message(*args, **kwargs)
+
+
+def _flood() -> FloodWaitError:
+    return FloodWaitError(request=None, capture=120)
+
+
+@pytest.mark.parametrize("error", [_flood(), ConnectionError("обрыв")], ids=["flood", "network"])
+async def test_failure_after_the_first_part_is_not_retried(error: Exception) -> None:
+    """Повтор продублировал бы уже вышедшее начало поста."""
+    client = _FailsOnSend(2, error)
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(PartialPublishError, match="не полностью"):
+        await publisher.publish(_make_message(_words(5000)))
+
+    assert len(client.sent) == 1
+
+
+async def test_failure_on_the_first_part_is_still_retried() -> None:
+    client = _FailsOnSend(1, _flood())
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(RateLimitedError):
+        await publisher.publish(_make_message(_words(5000)))
+
+
+async def test_failure_of_text_after_media_is_not_retried() -> None:
+    client = _FailsOnSend(1, ConnectionError("обрыв"))
+    publisher = TelegramPublisher(client, target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(PartialPublishError):
+        await publisher.publish(_make_message(_words(2000), media=_PHOTO))
