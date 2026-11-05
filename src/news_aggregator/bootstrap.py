@@ -21,6 +21,7 @@ from news_aggregator.dedup.paraphrase_deduplicator import ParaphraseDeduplicator
 from news_aggregator.dedup.simhash_deduplicator import SimHashDeduplicator
 from news_aggregator.filters.ad_filter import AdFilter
 from news_aggregator.filters.length_filter import LengthFilter
+from news_aggregator.filters.utm_filter import UtmSourceFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
 from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
@@ -39,6 +40,7 @@ def build_registry() -> ComponentRegistry:
     # Фильтры
     registry.filters.register("length_filter", LengthFilter)
     registry.filters.register("ad_filter", AdFilter)
+    registry.filters.register("utm_filter", UtmSourceFilter)
 
     # Дедупликаторы. text_hash/link принимают storage, simhash_deduplicator и
     # paraphrase_deduplicator — index (свой отдельный индекс) - подстановка

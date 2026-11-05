@@ -188,6 +188,10 @@ STOPWORDS = STOPWORDS | frozenset(
         "свой",
         "весь",
         "самый",
+        "лишь",
+        "просто",
+        "мочь",
+        "чей",
         # шаблонная обвязка постов и подписей
         "подписаться",
         "подписка",
@@ -219,6 +223,16 @@ def _get_morph() -> pymorphy3.MorphAnalyzer:
     return _morph
 
 
+def is_stopword(lemma: str) -> bool:
+    """Стоп-слово ли лемма. Буквы «е» и «ё» при сравнении не различаются.
+
+    pymorphy возвращает леммы с «ё» («её», «ещё», «всё»), а в списке стоп-слов
+    привычно пишут через «е»; без этой поправки такие слова не отфильтровывались
+    и попадали в множества лемм как «значимые».
+    """
+    return lemma in STOPWORDS or lemma.replace("ё", "е") in STOPWORDS
+
+
 def extract_lemma_set(normalized_text: str) -> frozenset[str]:
     """Возвращает множество лемм значимых слов нормализованного текста.
 
@@ -241,7 +255,7 @@ def extract_lemma_set(normalized_text: str) -> frozenset[str]:
         if len(word) < _MIN_TOKEN_LENGTH:
             continue
         lemma = morph.parse(word)[0].normal_form
-        if lemma in STOPWORDS:
+        if is_stopword(lemma):
             continue
         lemmas.add(lemma)
     return frozenset(lemmas)

@@ -1,6 +1,6 @@
 import pytest
 
-from news_aggregator.core.lemmatize import STOPWORDS, extract_lemma_set
+from news_aggregator.core.lemmatize import STOPWORDS, extract_lemma_set, is_stopword
 from news_aggregator.core.text_utils import normalize_text
 
 
@@ -34,3 +34,25 @@ def test_story_words_survive_lemmatization() -> None:
     lemmas = extract_lemma_set(normalize_text("Госдума приняла закон о запрете рекламы"))
 
     assert {"реклама", "закон", "запрет"} <= lemmas
+
+
+# ------------------------------------------------------------- е и ё не различаются
+
+
+@pytest.mark.parametrize("word", ["её", "ещё", "всё", "её", "еще", "ее"])
+def test_stopwords_are_filtered_regardless_of_e_yo_spelling(word: str) -> None:
+    """pymorphy возвращает «её»/«ещё» с ё, список стоп-слов — с е: раньше такие слова
+    не отфильтровывались и попадали в множество лемм как значимые."""
+    assert is_stopword(word) or is_stopword(word.replace("ё", "е"))
+    assert word not in extract_lemma_set(normalize_text(f"Хоккей {word} финал"))
+
+
+def test_content_words_with_yo_are_not_affected() -> None:
+    lemmas = extract_lemma_set(normalize_text("Учёные нашли новый вид бабочек"))
+
+    assert "учёный" in lemmas
+
+
+@pytest.mark.parametrize("word", ["лишь", "просто", "мочь", "чей"])
+def test_generic_modal_and_particle_words_are_stopwords(word: str) -> None:
+    assert word in STOPWORDS
