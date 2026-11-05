@@ -11,13 +11,41 @@ from __future__ import annotations
 import logging
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import (
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatForbiddenError,
+    ChatRestrictedError,
+    ChatWriteForbiddenError,
+    FloodWaitError,
+    ServerError,
+    TimedOutError,
+    UnauthorizedError,
+    UserBannedInChannelError,
+)
 
-from news_aggregator.core.errors import RateLimitedError
+from news_aggregator.core.errors import PublishUnavailableError, RateLimitedError
 from news_aggregator.core.interfaces import IPublisher
 from news_aggregator.core.models import ProcessedMessage
 
 logger = logging.getLogger(__name__)
+
+# Ошибки, не зависящие от содержимого поста: опубликовать сейчас нельзя ничего.
+# Список явный, а не ForbiddenError целиком: туда же входит, например,
+# ChatSendMediaForbiddenError, из-за которой пост с фото блокировал бы источник.
+# OSError покрывает ConnectionError и TimeoutError.
+_UNAVAILABLE_ERRORS = (
+    OSError,
+    ServerError,
+    TimedOutError,
+    UnauthorizedError,
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatForbiddenError,
+    ChatRestrictedError,
+    ChatWriteForbiddenError,
+    UserBannedInChannelError,
+)
 
 
 class TelegramPublisher(IPublisher):
@@ -74,6 +102,10 @@ class TelegramPublisher(IPublisher):
             # Пайплайн поставит паузу и повторит это сообщение после неё.
             raise RateLimitedError(
                 exc.seconds, f"FloodWait {exc.seconds} с при публикации в {self._target_channel}"
+            ) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise PublishUnavailableError(
+                f"{self._target_channel} недоступен: {type(exc).__name__}: {exc}"
             ) from exc
 
         logger.info(

@@ -270,7 +270,7 @@ async def test_publisher_failure_alerts_on_first_failing_run_by_default() -> Non
     assert len(sink.sent) == 1
     assert "публиковать" in sink.sent[0]
     assert "ChatWriteForbiddenError" in sink.sent[0]
-    assert "не повторяются" in sink.sent[0]
+    assert "пропускаются" in sink.sent[0]
 
 
 async def test_long_publisher_outage_does_not_repeat_alert_after_cooldown() -> None:

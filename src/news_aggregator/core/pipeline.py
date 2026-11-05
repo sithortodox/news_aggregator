@@ -19,6 +19,10 @@ ISourceRepository, IFilter, IDeduplicator, IEnricher, IPublisher, IStorage)
 время (повторные запросы во время FloodWait его только удлиняют), не
 продвигает курсор за сообщение, на котором остановился, и не помечает его
 увиденным — после паузы оно будет обработано заново, а не потеряно.
+
+Недоступность издателя (PublishUnavailableError) обрабатывается так же, но
+без паузы: прогон останавливается, курсор остаётся перед сообщением, и его
+повторит следующий прогон.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from news_aggregator.core.errors import RateLimitedError
+from news_aggregator.core.errors import PublishUnavailableError, RateLimitedError
 from news_aggregator.core.interfaces import (
     IDeduplicator,
     IEnricher,
@@ -169,9 +173,10 @@ class AggregatorPipeline:
     async def _publish(self, message: ProcessedMessage, stats: PipelineStats) -> bool:
         """Публикует сообщение. True — оно доставлено хотя бы одним издателем.
 
-        Если ни один издатель не справился (кроме ограничения частоты — тогда
-        бросается RateLimitedError), сообщение НЕ считается опубликованным:
-        вызывающий код не запоминает его как увиденное.
+        Если ни один издатель не справился, сообщение НЕ считается
+        опубликованным: вызывающий код не запоминает его как увиденное. Когда
+        причина не в самом сообщении, бросается RateLimitedError или
+        PublishUnavailableError — тогда сообщение будет обработано повторно.
         """
         if self._dry_run:
             logger.info(
@@ -183,12 +188,18 @@ class AggregatorPipeline:
 
         succeeded = 0
         limited: RateLimitedError | None = None
+        unavailable: PublishUnavailableError | None = None
         for publisher in self._publishers:
             try:
                 await publisher.publish(message)
                 succeeded += 1
             except RateLimitedError as exc:
                 limited = exc
+            except PublishUnavailableError as exc:
+                unavailable = exc
+                logger.warning("Издатель %s недоступен: %s", type(publisher).__name__, exc)
+                stats.publish_failures += 1
+                stats.publish_error = _short_error(f"{type(publisher).__name__}: {exc}")
             except Exception as exc:
                 logger.exception(
                     "Издатель %s не смог опубликовать сообщение %s/%s",
@@ -211,6 +222,10 @@ class AggregatorPipeline:
             stats.publish_error = _short_error(f"ограничение частоты запросов: {limited}")
             self._register_rate_limit(limited, "издатель", stats)
 
+        # Если часть издателей доставила, повтор дал бы им дубль (см. выше).
+        if unavailable is not None and succeeded == 0:
+            raise unavailable
+
         if succeeded == 0:
             logger.error(
                 "Сообщение %s/%s не опубликовано ни одним издателем и пропущено",
@@ -221,7 +236,8 @@ class AggregatorPipeline:
 
     async def _process_source(self, source: Source, stats: PipelineStats) -> bool:
         """Обрабатывает один источник. True — упёрлись в ограничение частоты
-        запросов и остальные источники в этом прогоне трогать не нужно."""
+        запросов или недоступность издателя, и остальные источники в этом
+        прогоне трогать не нужно."""
         reader = self._reader_for(source)
         if reader is None:
             message = f"Нет ридера для источника '{source.id}' (kind={source.kind.value})"
@@ -235,7 +251,7 @@ class AggregatorPipeline:
         last_external_id = await self._storage.get_last_external_id(source.id)
         newest_external_id = last_external_id
         processed_count = 0
-        rate_limited = False
+        stop_run = False
 
         try:
             async for raw in reader.read_new_messages(source, last_external_id):
@@ -250,8 +266,8 @@ class AggregatorPipeline:
 
                 try:
                     await self._handle_message(raw, stats)
-                except RateLimitedError:
-                    # Курсор остаётся перед этим сообщением — после паузы его
+                except (RateLimitedError, PublishUnavailableError):
+                    # Курсор остаётся перед этим сообщением — позже его
                     # обработают заново (оно не запомнено как увиденное).
                     raise
                 except Exception:
@@ -265,8 +281,12 @@ class AggregatorPipeline:
                 stats.messages_fetched += 1
                 newest_external_id = raw.external_id
         except RateLimitedError as exc:
-            rate_limited = True
+            stop_run = True
             self._register_rate_limit(exc, f"источник '{source.id}'", stats)
+        except PublishUnavailableError as exc:
+            # Источник тут ни при чём: не считаем его ни упавшим, ни успешным.
+            stop_run = True
+            stats.add_error(f"Издатель недоступен, прогон остановлен: {exc}")
         except Exception as exc:
             message = f"Источник '{source.id}' упал: {exc}"
             logger.exception(message)
@@ -279,7 +299,7 @@ class AggregatorPipeline:
 
         if newest_external_id is not None and newest_external_id != last_external_id:
             await self._storage.set_last_external_id(source.id, newest_external_id)
-        return rate_limited
+        return stop_run
 
     async def _handle_message(self, raw: RawMessage, stats: PipelineStats) -> None:
         message = self._process_raw_message(raw)

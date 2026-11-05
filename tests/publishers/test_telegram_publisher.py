@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from news_aggregator.core.errors import PublishUnavailableError
 from news_aggregator.core.models import MediaAttachment, ProcessedMessage, RawMessage
 from news_aggregator.publishers.telegram_publisher import TelegramPublisher
 
@@ -231,4 +232,69 @@ async def test_other_publish_errors_are_not_converted() -> None:
     publisher = TelegramPublisher(_Broken(), target_channel="@target")  # type: ignore[arg-type]
 
     with pytest.raises(ValueError):
+        await publisher.publish(_make_message("Текст"))
+
+
+# ------------------------------------------------------- недоступность канала
+
+
+def _unavailable_errors() -> list[Exception]:
+    from telethon import errors
+
+    return [
+        ConnectionError("Cannot send requests while disconnected"),
+        TimeoutError(),
+        errors.ServerError(None, "INTERNAL"),
+        errors.TimedOutError(None, "Timeout"),
+        errors.AuthKeyUnregisteredError(request=None),
+        errors.ChannelPrivateError(request=None),
+        errors.ChatAdminRequiredError(request=None),
+        errors.ChatWriteForbiddenError(request=None),
+        errors.UserBannedInChannelError(request=None),
+    ]
+
+
+@pytest.mark.parametrize("error", _unavailable_errors(), ids=lambda e: type(e).__name__)
+async def test_target_level_errors_become_publish_unavailable(error: Exception) -> None:
+    class _Down(_FakeTelethonClient):
+        async def send_message(self, *args: Any, **kwargs: Any) -> None:
+            raise error
+
+    publisher = TelegramPublisher(_Down(), target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(PublishUnavailableError, match="@target"):
+        await publisher.publish(_make_message("Текст"))
+
+
+async def test_unavailable_on_send_file_is_converted_too() -> None:
+    class _Down(_FakeTelethonClient):
+        async def send_file(self, *args: Any, **kwargs: Any) -> None:
+            raise ConnectionError("disconnected")
+
+    message = _make_message("Текст", media=MediaAttachment(kind="photo", native_ref=object()))
+    publisher = TelegramPublisher(_Down(), target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(PublishUnavailableError):
+        await publisher.publish(message)
+
+
+def _message_level_errors() -> list[Exception]:
+    from telethon import errors
+
+    return [
+        errors.MessageTooLongError(request=None),
+        errors.MediaCaptionTooLongError(request=None),
+        errors.ChatSendMediaForbiddenError(request=None),
+    ]
+
+
+@pytest.mark.parametrize("error", _message_level_errors(), ids=lambda e: type(e).__name__)
+async def test_message_level_errors_are_not_retried(error: Exception) -> None:
+    class _Rejecting(_FakeTelethonClient):
+        async def send_message(self, *args: Any, **kwargs: Any) -> None:
+            raise error
+
+    publisher = TelegramPublisher(_Rejecting(), target_channel="@target")  # type: ignore[arg-type]
+
+    with pytest.raises(type(error)):
         await publisher.publish(_make_message("Текст"))

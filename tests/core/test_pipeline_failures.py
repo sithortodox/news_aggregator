@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from news_aggregator.core.errors import RateLimitedError
+from news_aggregator.core.errors import PublishUnavailableError, RateLimitedError
 from news_aggregator.core.interfaces import ISourceReader
 from news_aggregator.core.models import ProcessedMessage, RawMessage, Source, SourceKind
 from news_aggregator.core.pipeline import AggregatorPipeline
@@ -342,6 +342,74 @@ async def test_rate_limit_from_one_of_several_publishers_is_a_failure_not_a_retr
     clock.now += 10
     await pipeline.run_once()  # пауза всё ещё действует
     assert good.calls == 1
+
+
+# ------------------------------------------------------- недоступность издателя
+
+
+async def test_unavailable_publisher_keeps_all_messages_for_retry() -> None:
+    reader = _Reader(
+        {
+            "a": [_msg("a", 1, "Первая новость дня"), _msg("a", 2, "Вторая новость дня")],
+            "b": [_msg("b", 1, "Новость другого канала")],
+        }
+    )
+    publisher = _Publisher()
+    publisher.fail_with = PublishUnavailableError("канал недоступен")
+    pipeline, storage = _pipeline(reader, ["a", "b"], [publisher])
+
+    first = await pipeline.run_once()
+
+    assert publisher.calls == 1  # остальное не пробуем: канал общий для всех постов
+    assert reader.calls == ["a"]
+    assert first.publish_failures == 1
+    assert first.publish_error is not None and "канал недоступен" in first.publish_error
+    assert first.messages_published == 0
+    assert first.messages_fetched == 0
+    assert first.failed_sources == []  # источник исправен
+    assert first.succeeded_sources == []
+    assert await storage.get_last_external_id("a") is None
+
+    publisher.fail_with = None
+    second = await pipeline.run_once()
+
+    assert second.messages_published == 3
+    assert publisher.texts == [
+        "Первая новость дня",
+        "Вторая новость дня",
+        "Новость другого канала",
+    ]
+
+
+async def test_unavailable_publisher_on_second_message_keeps_cursor_after_first() -> None:
+    reader = _Reader(
+        {"a": [_msg("a", 1, "Первая новость дня"), _msg("a", 2, "Вторая новость дня")]}
+    )
+    publisher = _Publisher()
+    publisher.fail_with = PublishUnavailableError("сеть")
+    publisher.fail_on_calls = {2}
+    pipeline, storage = _pipeline(reader, ["a"], [publisher])
+
+    await pipeline.run_once()
+    assert await storage.get_last_external_id("a") == "1"
+
+    await pipeline.run_once()
+    assert publisher.texts == ["Первая новость дня", "Вторая новость дня"]
+
+
+async def test_one_unavailable_publisher_of_several_does_not_cause_duplicates() -> None:
+    reader = _Reader({"a": [_msg("a", 1, "Важная новость дня")]})
+    good, down = _Publisher(), _Publisher()
+    down.fail_with = PublishUnavailableError("сеть")
+    pipeline, storage = _pipeline(reader, ["a"], [good, down])
+
+    stats = await pipeline.run_once()
+    await pipeline.run_once()
+
+    assert stats.messages_published == 1
+    assert stats.publish_failures == 1
+    assert good.texts == ["Важная новость дня"]
+    assert await storage.get_last_external_id("a") == "1"
 
 
 async def test_rate_limit_without_reader_errors_does_not_mark_other_runs_failed() -> None:
