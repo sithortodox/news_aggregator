@@ -99,10 +99,13 @@ class AggregatorPipeline:
 
     def _process_raw_message(self, raw: RawMessage) -> ProcessedMessage:
         normalized = normalize_text(raw.text)
+        # У постов без текста хэш пустой строки был бы общим: все они после
+        # первого считались бы дублями. Поэтому сравнивается сам файл.
+        fingerprint = raw.media.fingerprint if raw.media is not None else ""
         return ProcessedMessage(
             raw=raw,
             normalized_text=normalized,
-            text_hash=compute_text_hash(normalized),
+            text_hash=compute_text_hash(normalized or fingerprint),
             links=extract_links(raw.text),
         )
 

@@ -8,14 +8,14 @@ Telegram — согласно требованию "не использоват�
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from telethon.errors import FloodWaitError
 
 from news_aggregator.core.errors import RateLimitedError
-from news_aggregator.core.models import Source, SourceKind
+from news_aggregator.core.models import RawMessage, Source, SourceKind
 from news_aggregator.sources.telegram_source import TelegramSourceReader
 
 
@@ -29,8 +29,14 @@ class _FakeTgMessage:
         photo: object | None = None,
         document: object | None = None,
         entities: list[object] | None = None,
+        grouped_id: int | None = None,
+        sticker: object | None = None,
+        action: object | None = None,
     ) -> None:
         self.id = id
+        self.grouped_id = grouped_id
+        self.sticker = sticker
+        self.action = action
         self.message = message
         self.date = date
         self.media = media
@@ -441,3 +447,108 @@ async def test_channel_is_resolved_on_every_read_through_the_session_cache() -> 
 
     assert client.get_entity_calls == ["@ch1"]
     assert not hasattr(client, "get_entity")
+
+
+# ------------------------------------------------- альбомы и посты без текста
+
+
+def _photo(photo_id: int) -> SimpleNamespace:
+    return SimpleNamespace(id=photo_id)
+
+
+def _album_part(
+    id: int, date: datetime, *, text: str = "", group: int = 7, entities: list[object] | None = None
+) -> _FakeTgMessage:
+    return _FakeTgMessage(id, text, date, photo=_photo(id), grouped_id=group, entities=entities)
+
+
+async def _read(messages: list[_FakeTgMessage], since: str | None = "0") -> list[RawMessage]:
+    reader = TelegramSourceReader(_FakeTelethonClient(messages))  # type: ignore[arg-type]
+    return [r async for r in reader.read_new_messages(_tg_source(), since)]
+
+
+def _long_ago() -> datetime:
+    return datetime.now(tz=UTC) - timedelta(minutes=5)
+
+
+async def test_album_becomes_one_post_with_all_media() -> None:
+    date = _long_ago()
+    entity = object()
+    results = await _read(
+        [
+            _album_part(1, date),
+            _album_part(2, date, text="Подпись альбома", entities=[entity]),
+            _album_part(3, date),
+        ]
+    )
+
+    assert len(results) == 1
+    post = results[0]
+    assert post.text == "Подпись альбома"
+    assert post.formatting_entities == (entity,)
+    assert post.external_id == "3"  # курсор встанет за весь альбом
+    assert post.media is not None
+    assert post.media.kind == "album"
+    assert [photo.id for photo in post.media.native_ref] == [1, 2, 3]  # type: ignore[attr-defined]
+    assert post.media.fingerprint == "photo:1,photo:2,photo:3"
+
+
+async def test_messages_around_an_album_keep_their_order() -> None:
+    date = _long_ago()
+    results = await _read(
+        [
+            _FakeTgMessage(1, "До альбома", date),
+            _album_part(2, date, group=7),
+            _album_part(3, date, group=7),
+            _album_part(4, date, group=8),
+            _album_part(5, date, group=8),
+            _FakeTgMessage(6, "После альбома", date),
+        ]
+    )
+
+    assert [r.external_id for r in results] == ["1", "3", "5", "6"]
+
+
+async def test_fresh_album_at_the_end_waits_for_the_next_run() -> None:
+    """Иначе части, дошедшие после опроса, вышли бы отдельным постом."""
+    now = datetime.now(tz=UTC)
+    results = await _read(
+        [
+            _FakeTgMessage(1, "Обычный пост", now),
+            _album_part(2, now),
+            _album_part(3, now),
+        ]
+    )
+
+    assert [r.external_id for r in results] == ["1"]
+
+
+async def test_fresh_album_followed_by_a_message_is_complete() -> None:
+    now = datetime.now(tz=UTC)
+    results = await _read([_album_part(1, now), _FakeTgMessage(2, "Следующий пост", now)])
+
+    assert [r.external_id for r in results] == ["1", "2"]
+
+
+async def test_photo_without_text_is_a_post() -> None:
+    now = datetime.now(tz=UTC)
+    results = await _read([_FakeTgMessage(1, "", now, photo=_photo(42))])
+
+    assert len(results) == 1
+    assert results[0].text == ""
+    assert results[0].media is not None
+    assert results[0].media.fingerprint == "photo:42"
+
+
+async def test_sticker_and_service_messages_are_not_posts() -> None:
+    now = datetime.now(tz=UTC)
+    sticker = SimpleNamespace(id=1)
+    results = await _read(
+        [
+            _FakeTgMessage(1, "", now, document=sticker, sticker=sticker),
+            # Telethon отдаёт в .photo новую аватарку канала.
+            _FakeTgMessage(2, "", now, photo=_photo(2), action=object()),
+        ]
+    )
+
+    assert results == []

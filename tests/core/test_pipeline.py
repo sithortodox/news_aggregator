@@ -2,7 +2,13 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 
 from news_aggregator.core.interfaces import ISourceReader
-from news_aggregator.core.models import ProcessedMessage, RawMessage, Source, SourceKind
+from news_aggregator.core.models import (
+    MediaAttachment,
+    ProcessedMessage,
+    RawMessage,
+    Source,
+    SourceKind,
+)
 from news_aggregator.core.pipeline import AggregatorPipeline
 from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.filters.length_filter import LengthFilter
@@ -259,3 +265,33 @@ async def test_source_added_after_pipeline_creation_is_picked_up_next_run() -> N
     assert stats_after.sources_total == 1
     assert stats_after.messages_published == 1
     assert len(publisher.published) == 1
+
+
+def _photo_msg(external_id: str, fingerprint: str) -> RawMessage:
+    return RawMessage(
+        source_id="src1",
+        external_id=external_id,
+        text="",
+        posted_at=datetime.now(),
+        fetched_at=datetime.now(),
+        media=MediaAttachment(kind="photo", native_ref=object(), fingerprint=fingerprint),
+    )
+
+
+async def test_posts_without_text_are_compared_by_file() -> None:
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="S")
+    publisher = _RecordingPublisher()
+    reader = _ScriptedReader(
+        "src1",
+        [
+            _photo_msg("1", "photo:1"),
+            _photo_msg("2", "photo:2"),
+            _photo_msg("3", "photo:1"),
+        ],
+    )
+    pipeline = _make_pipeline(reader, [source], publisher, InMemoryStorage())
+
+    stats = await pipeline.run_once()
+
+    assert [m.raw.external_id for m in publisher.published] == ["1", "2"]
+    assert stats.messages_duplicate == 1

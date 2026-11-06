@@ -12,6 +12,7 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
 from datetime import UTC, datetime
+from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -24,6 +25,79 @@ from news_aggregator.sources.telegram_client import ensure_connected
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_KINDS = (SourceKind.TELEGRAM_CHANNEL, SourceKind.TELEGRAM_GROUP)
+_ALBUM_SETTLE_SECONDS = 10.0
+
+
+def _attachment(tg_message: Any) -> MediaAttachment | None:
+    """Вложение сообщения или None, если публиковать нечего.
+
+    Стикеры и сервисные сообщения не контент: `.photo` у Telethon отдаёт и новую
+    аватарку канала из сервисного сообщения о её смене.
+    """
+    if getattr(tg_message, "action", None) is not None:
+        return None
+    if getattr(tg_message, "sticker", None) is not None:
+        return None
+
+    # ВАЖНО: используем именно resolved-объекты .photo/.document, а
+    # не tg_message.media напрямую как native_ref. Telethon эти
+    # property'и резолвит и внутрь превью ссылки (web_preview),
+    # если у него есть встроенная картинка/видео — то есть .photo
+    # может быть не None, даже когда tg_message.media остаётся
+    # MessageMediaWebPage. send_file(..., file=MessageMediaWebPage)
+    # падает с TypeError, а send_file(..., file=<Photo>/<Document>)
+    # работает и для превью, и для настоящих вложений.
+    for kind in ("photo", "document"):
+        native_ref = getattr(tg_message, kind, None)
+        if native_ref is not None:
+            fingerprint = f"{kind}:{getattr(native_ref, 'id', '')}"
+            return MediaAttachment(kind=kind, native_ref=native_ref, fingerprint=fingerprint)
+    return None
+
+
+def _merge_attachments(attachments: list[MediaAttachment]) -> MediaAttachment | None:
+    """Одно вложение как есть; несколько — альбом: send_file принимает список."""
+    if len(attachments) <= 1:
+        return attachments[0] if attachments else None
+    return MediaAttachment(
+        kind="album",
+        native_ref=[attachment.native_ref for attachment in attachments],
+        fingerprint=",".join(attachment.fingerprint for attachment in attachments),
+    )
+
+
+def _to_raw_message(
+    tg_messages: list[Any], source: Source, fetched_at: datetime
+) -> RawMessage | None:
+    """Собирает пост из сообщения или альбома; None — публиковать нечего.
+
+    external_id — последнего сообщения: курсор должен встать за весь альбом.
+    Текст альбома лежит в одном из сообщений, не обязательно в первом.
+    """
+    media = _merge_attachments([a for a in map(_attachment, tg_messages) if a is not None])
+    captioned = next(
+        (m for m in tg_messages if (getattr(m, "message", None) or "").strip()),
+        None,
+    )
+    if captioned is None and media is None:
+        # Сервисное сообщение, стикер, опрос и т.п.
+        logger.debug(
+            "Пропущено сообщение без содержимого %s в источнике '%s'",
+            tg_messages[-1].id,
+            source.id,
+        )
+        return None
+
+    return RawMessage(
+        source_id=source.id,
+        external_id=str(tg_messages[-1].id),
+        text=captioned.message if captioned is not None else "",
+        posted_at=tg_messages[0].date or fetched_at,
+        fetched_at=fetched_at,
+        media=media,
+        formatting_entities=tuple(getattr(captioned, "entities", None) or ()),
+        source_display_name=source.display_name,
+    )
 
 
 class TelegramSourceReader(ISourceReader):
@@ -94,39 +168,29 @@ class TelegramSourceReader(ISourceReader):
             latest = await self._client.get_messages(entity, limit=1)
             min_id = latest[0].id - 1 if latest else 0
 
+        # Сообщения одного альбома идут подряд с общим grouped_id: копим их и
+        # отдаём одним постом, когда встретится что-то другое.
+        album: list[Any] = []
         async for tg_message in self._client.iter_messages(entity, min_id=min_id, reverse=True):
-            text = getattr(tg_message, "message", None) or ""
-            if not text.strip():
-                # Пропускаем сообщения без текста (только фото/стикер/сервисные).
-                logger.debug(
-                    "Пропущено нетекстовое сообщение %s в источнике '%s'",
-                    tg_message.id,
-                    source.id,
-                )
+            grouped_id = getattr(tg_message, "grouped_id", None)
+            if album and grouped_id != album[0].grouped_id:
+                raw = _to_raw_message(album, source, fetched_at)
+                album = []
+                if raw is not None:
+                    yield raw
+
+            if grouped_id is not None:
+                album.append(tg_message)
                 continue
 
-            posted_at = tg_message.date or fetched_at
-            media = None
-            # ВАЖНО: используем именно resolved-объекты .photo/.document, а
-            # не tg_message.media напрямую как native_ref. Telethon эти
-            # property'и резолвит и внутрь превью ссылки (web_preview),
-            # если у него есть встроенная картинка/видео — то есть .photo
-            # может быть не None, даже когда tg_message.media остаётся
-            # MessageMediaWebPage. send_file(..., file=MessageMediaWebPage)
-            # падает с TypeError, а send_file(..., file=<Photo>/<Document>)
-            # работает и для превью, и для настоящих вложений.
-            if getattr(tg_message, "photo", None) is not None:
-                media = MediaAttachment(kind="photo", native_ref=tg_message.photo)
-            elif getattr(tg_message, "document", None) is not None:
-                media = MediaAttachment(kind="document", native_ref=tg_message.document)
+            raw = _to_raw_message([tg_message], source, fetched_at)
+            if raw is not None:
+                yield raw
 
-            yield RawMessage(
-                source_id=source.id,
-                external_id=str(tg_message.id),
-                text=text,
-                posted_at=posted_at,
-                fetched_at=fetched_at,
-                media=media,
-                formatting_entities=tuple(getattr(tg_message, "entities", None) or ()),
-                source_display_name=source.display_name,
-            )
+        # Части альбома приходят не одновременно. Свежий альбом в самом конце
+        # канала мог дойти не весь: курсор останется перед ним, следующий
+        # прогон прочитает его целиком.
+        if album and (fetched_at - album[-1].date).total_seconds() >= _ALBUM_SETTLE_SECONDS:
+            raw = _to_raw_message(album, source, fetched_at)
+            if raw is not None:
+                yield raw

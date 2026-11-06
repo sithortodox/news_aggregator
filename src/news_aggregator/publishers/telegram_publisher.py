@@ -105,7 +105,7 @@ class TelegramPublisher(IPublisher):
         # Добавленный футер идёт строго ПОСЛЕ исходного текста, поэтому
         # смещения entities (которые всегда внутри исходного текста)
         # остаются верными и после этого.
-        full_text = text + footer
+        full_text = text + footer if text.strip() else footer.strip()
         formatting_entities = list(entities) if entities else None
         media = raw.media
 

@@ -493,3 +493,21 @@ async def test_failure_of_text_after_media_is_not_retried() -> None:
 
     with pytest.raises(PartialPublishError):
         await publisher.publish(_make_message(_words(2000), media=_PHOTO))
+
+
+# -------------------------------------------- альбомы и посты без текста
+
+
+async def test_album_is_sent_as_one_file_list_with_caption() -> None:
+    photos = ["photo1", "photo2"]
+    client = await _publish("Подпись", media=MediaAttachment(kind="album", native_ref=photos))
+
+    assert len(client.sent_files) == 1
+    assert client.sent_files[0]["file"] == photos
+    assert client.sent_files[0]["caption"] == "Подпись" + _FOOTER
+
+
+async def test_post_without_text_gets_only_the_source_line() -> None:
+    client = await _publish("", media=_PHOTO)
+
+    assert client.sent_files[0]["caption"] == _FOOTER.strip()
