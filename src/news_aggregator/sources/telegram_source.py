@@ -16,6 +16,7 @@ from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.tl import types
 
 from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.interfaces import ISourceReader
@@ -47,11 +48,18 @@ def _attachment(tg_message: Any) -> MediaAttachment | None:
     # MessageMediaWebPage. send_file(..., file=MessageMediaWebPage)
     # падает с TypeError, а send_file(..., file=<Photo>/<Document>)
     # работает и для превью, и для настоящих вложений.
+    # Превью ссылки помечено отдельным видом: его картинка — не контент поста
+    # (у статей одного сайта она часто общая), сравнивать по ней нельзя.
+    is_preview = isinstance(getattr(tg_message, "media", None), types.MessageMediaWebPage)
     for kind in ("photo", "document"):
         native_ref = getattr(tg_message, kind, None)
         if native_ref is not None:
             fingerprint = f"{kind}:{getattr(native_ref, 'id', '')}"
-            return MediaAttachment(kind=kind, native_ref=native_ref, fingerprint=fingerprint)
+            return MediaAttachment(
+                kind="link_preview" if is_preview else kind,
+                native_ref=native_ref,
+                fingerprint=fingerprint,
+            )
     return None
 
 

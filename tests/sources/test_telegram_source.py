@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from telethon.errors import FloodWaitError
+from telethon.tl import types
 
 from news_aggregator.core.errors import RateLimitedError
 from news_aggregator.core.models import RawMessage, Source, SourceKind
@@ -193,7 +194,7 @@ async def test_link_preview_with_embedded_photo_uses_resolved_photo_not_raw_medi
     native_ref обязан быть resolved-объектом .photo, а не .media, иначе
     send_file падает с TypeError('Cannot use MessageMediaWebPage...')."""
     now = datetime.now(tz=UTC)
-    fake_webpage_media = SimpleNamespace(id="webpage-preview")
+    fake_webpage_media = types.MessageMediaWebPage(webpage=types.WebPageEmpty(id=1))
     fake_preview_photo = SimpleNamespace(id="preview-photo-ref")
     client = _FakeTelethonClient(
         [
@@ -211,7 +212,8 @@ async def test_link_preview_with_embedded_photo_uses_resolved_photo_not_raw_medi
     results = [r async for r in reader.read_new_messages(_tg_source(), None)]
 
     assert results[0].media is not None
-    assert results[0].media.kind == "photo"
+    # Картинка превью — не контент поста: по ней не сравнивают дубли.
+    assert results[0].media.kind == "link_preview"
     assert results[0].media.native_ref is fake_preview_photo
     assert results[0].media.native_ref is not fake_webpage_media
 

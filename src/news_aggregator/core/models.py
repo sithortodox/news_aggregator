@@ -126,6 +126,21 @@ class ProcessedMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageHashRecord:
+    """Отпечаток картинки недавно опубликованного поста (см. IImageHashIndex).
+
+    Attributes:
+        image_hash: Перцептивный хэш картинки (см. core/image_hash.py).
+        source_id: Источник поста: картинки сравниваются только между разными.
+        stems: Основы лемм текста поста — для проверки, что тексты не о разном.
+    """
+
+    image_hash: int
+    source_id: str
+    stems: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class DeduplicationResult:
     """Результат проверки сообщения на дублирование.
 

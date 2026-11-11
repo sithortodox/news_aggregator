@@ -36,6 +36,7 @@ from news_aggregator.core.interfaces import (
     IDeduplicator,
     IEnricher,
     IFilter,
+    IImageHasher,
     ILemmaSetIndex,
     IPublisher,
     IRunStatsStore,
@@ -105,6 +106,7 @@ def _build_deduplicators(
     config: AppConfig,
     storage: IStorage,
     shared_db_path: str,
+    image_hasher: IImageHasher | None = None,
 ) -> list[IDeduplicator]:
     deduplicators: list[IDeduplicator] = []
     # char- и word-режимы SimHash дают несравнимые отпечатки для одного и
@@ -136,6 +138,21 @@ def _build_deduplicators(
                 )
             created = registry.deduplicators.create(
                 c.name, index=lemma_index_cache[index_name], **params
+            )
+        elif c.name == "image_deduplicator":
+            params = dict(c.params)
+            index_name = str(params.pop("index_name", "seen_image_hashes"))
+            if image_hasher is None:
+                logger.warning(
+                    "image_deduplicator: нет Telegram-клиента, картинки сравниваться не будут"
+                )
+            created = registry.deduplicators.create(
+                c.name,
+                index=registry.image_hash_indexes.create(
+                    "sqlite", db_path=shared_db_path, table_name=index_name
+                ),
+                hasher=image_hasher,
+                **params,
             )
         else:
             created = registry.deduplicators.create(c.name, storage=storage, **c.params)
@@ -292,7 +309,6 @@ async def build_pipeline(
     """
     storage = _build_storage(registry, config)
     filters = _build_filters(registry, config)
-    deduplicators = _build_deduplicators(registry, config, storage, _shared_sqlite_db_path(config))
     enrichers: list[IEnricher] = [
         registry.enrichers.create(c.name, **c.params)  # type: ignore[misc]
         for c in config.enrichers
@@ -302,6 +318,16 @@ async def build_pipeline(
         registry, config, telegram_client_cache, connect=connect_telegram
     )
     readers = await _build_readers(registry, telegram_client_cache, connect=connect_telegram)
+    # Дедупликаторы — после ридеров: image_deduplicator скачивает картинки тем же
+    # Telegram-клиентом, а он появляется только вместе с ридером или издателем.
+    image_hasher: IImageHasher | None = None
+    if "client" in telegram_client_cache and "telegram" in registry.image_hashers.available():
+        image_hasher = registry.image_hashers.create(  # type: ignore[assignment]
+            "telegram", client=telegram_client_cache["client"]
+        )
+    deduplicators = _build_deduplicators(
+        registry, config, storage, _shared_sqlite_db_path(config), image_hasher
+    )
 
     source_repository: ISourceRepository = registry.source_repositories.create(  # type: ignore[assignment]
         "sqlite", db_path=_shared_sqlite_db_path(config)

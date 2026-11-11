@@ -24,12 +24,13 @@ from news_aggregator.bootstrap import build_registry
 from news_aggregator.config.loader import ConfigError, load_app_config
 from news_aggregator.core.interfaces import (
     IDeduplicator,
+    IImageHashIndex,
     ILemmaSetIndex,
     ISimhashIndex,
     IStorage,
 )
 from news_aggregator.core.lemmatize import extract_lemma_set, numbers_in, stem_set
-from news_aggregator.core.models import ProcessedMessage, RawMessage
+from news_aggregator.core.models import ImageHashRecord, ProcessedMessage, RawMessage
 from news_aggregator.core.text_utils import compute_text_hash, extract_links, normalize_text
 
 
@@ -97,6 +98,17 @@ class _MemoryLemmaIndex(ILemmaSetIndex):
         return None
 
 
+class _MemoryImageHashIndex(IImageHashIndex):
+    async def find_recent(self, since: datetime) -> list[ImageHashRecord]:
+        return []
+
+    async def save(self, record: ImageHashRecord, external_id: str) -> None:
+        return None
+
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        return 0
+
+
 def _message(text: str, ident: str) -> ProcessedMessage:
     normalized = normalize_text(text)
     now = datetime.now(UTC)
@@ -123,6 +135,9 @@ def _build_layers(config_path: str) -> list[IDeduplicator]:
             kwargs: dict[str, object] = {"index": simhash_index}
         elif component.name == "paraphrase_deduplicator":
             kwargs = {"index": lemma_index}
+        elif component.name == "image_deduplicator":
+            # Сравниваются только тексты: картинок у dedup_explain нет.
+            kwargs = {"index": _MemoryImageHashIndex(), "hasher": None}
         else:
             kwargs = {"storage": storage}
         created = registry.deduplicators.create(component.name, **kwargs, **component.params)

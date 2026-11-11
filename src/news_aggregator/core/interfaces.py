@@ -14,6 +14,8 @@ from datetime import datetime
 
 from news_aggregator.core.models import (
     DeduplicationResult,
+    ImageHashRecord,
+    MediaAttachment,
     PipelineStats,
     ProcessedMessage,
     RawMessage,
@@ -175,6 +177,42 @@ class ISimhashIndex(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Освобождает ресурсы хранилища (соединения и т.п.)."""
+
+
+class IImageHasher(ABC):
+    """Считает перцептивный хэш картинки вложения.
+
+    Реализация живёт в адаптере источника: только он умеет скачать файл по
+    MediaAttachment.native_ref. Ядро получает готовое число.
+    """
+
+    @abstractmethod
+    async def hash(self, media: MediaAttachment) -> int | None:
+        """Хэш картинки вложения или None, если картинки нет или скачать не вышло.
+
+        Ограничение частоты запросов сообщает через RateLimitedError, как ридеры
+        и издатели: пайплайн поставит паузу и обработает сообщение позже.
+        """
+
+
+class IImageHashIndex(ABC):
+    """Хранилище отпечатков картинок недавних постов (для ImageDeduplicator).
+
+    Как и остальные индексы, само ограничивает объём: purge_older_than
+    вызывается дедупликатором при каждом remember().
+    """
+
+    @abstractmethod
+    async def find_recent(self, since: datetime) -> list[ImageHashRecord]:
+        """Возвращает отпечатки, сохранённые с момента since."""
+
+    @abstractmethod
+    async def save(self, record: ImageHashRecord, external_id: str) -> None:
+        """Сохраняет отпечаток с текущей меткой времени."""
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        """Удаляет записи старше cutoff. Возвращает число удалённых записей."""
 
 
 class ILemmaSetIndex(ABC):
