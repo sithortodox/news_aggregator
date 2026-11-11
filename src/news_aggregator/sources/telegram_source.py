@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_KINDS = (SourceKind.TELEGRAM_CHANNEL, SourceKind.TELEGRAM_GROUP)
 _ALBUM_SETTLE_SECONDS = 10.0
+# Больше 10 файлов в альбом Telegram не собирает.
+_MAX_ALBUM_SIZE = 10
 
 
 def _attachment(tg_message: Any) -> MediaAttachment | None:
@@ -108,6 +110,19 @@ def _to_raw_message(
     )
 
 
+def _start_of_latest_post(newest_first: list[Any]) -> int:
+    """id первого сообщения последнего поста: последнего сообщения или его альбома."""
+    start = newest_first[0].id
+    grouped_id = getattr(newest_first[0], "grouped_id", None)
+    if grouped_id is None:
+        return int(start)
+    for tg_message in newest_first[1:]:
+        if getattr(tg_message, "grouped_id", None) != grouped_id:
+            break
+        start = tg_message.id
+    return int(start)
+
+
 class TelegramSourceReader(ISourceReader):
     """Читает новые сообщения Telegram-канала/группы начиная с курсора.
 
@@ -172,9 +187,11 @@ class TelegramSourceReader(ISourceReader):
             # практически гарантированный FloodWaitError при попытке
             # опубликовать их все разом. Вместо этого фиксируем текущее
             # последнее сообщение как стартовую точку — дальше видны
-            # только действительно новые посты.
-            latest = await self._client.get_messages(entity, limit=1)
-            min_id = latest[0].id - 1 if latest else 0
+            # только действительно новые посты. Если последний пост — альбом,
+            # стартовая точка встаёт перед его первой частью: иначе вышла бы
+            # одна последняя часть, а подпись альбома лежит в первой.
+            latest = await self._client.get_messages(entity, limit=_MAX_ALBUM_SIZE)
+            min_id = _start_of_latest_post(latest) - 1 if latest else 0
 
         # Сообщения одного альбома идут подряд с общим grouped_id: копим их и
         # отдаём одним постом, когда встретится что-то другое.

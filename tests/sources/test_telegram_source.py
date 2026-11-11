@@ -69,8 +69,9 @@ class _FakeTelethonClient:
         return SimpleNamespace(name=identifier)
 
     async def get_messages(self, entity: object, limit: int = 1) -> list[_FakeTgMessage]:
+        """Как Telethon: самые новые сообщения, от новых к старым."""
         self.get_messages_calls.append(limit)
-        return [self._messages[-1]] if self._messages else []
+        return list(reversed(self._messages))[:limit]
 
     async def iter_messages(self, entity: object, min_id: int = 0, reverse: bool = True):
         self.iter_calls.append((min_id, reverse))
@@ -113,7 +114,7 @@ async def test_new_source_without_cursor_only_catches_up_from_latest_message() -
     results = [r async for r in reader.read_new_messages(_tg_source(), None)]
 
     assert [r.external_id for r in results] == ["3"]
-    assert client.get_messages_calls == [1]
+    assert client.get_messages_calls == [10]
     assert client.iter_calls == [(2, True)]
 
 
@@ -124,7 +125,7 @@ async def test_new_source_without_cursor_and_empty_channel_reads_nothing() -> No
     results = [r async for r in reader.read_new_messages(_tg_source(), None)]
 
     assert results == []
-    assert client.get_messages_calls == [1]
+    assert client.get_messages_calls == [10]
     assert client.iter_calls == [(0, True)]
 
 
@@ -554,3 +555,36 @@ async def test_sticker_and_service_messages_are_not_posts() -> None:
     )
 
     assert results == []
+
+
+async def test_first_read_of_channel_ending_with_album_takes_whole_album() -> None:
+    """Регресс (hubtehno): новый канал, последний пост — альбом с подписью в
+    первой части. Раньше бралось одно последнее сообщение — видео без текста."""
+    old = _long_ago()
+    messages = [
+        _FakeTgMessage(1, "Старый пост", old),
+        _album_part(2, old, text="Китайцы придумали ИИ-компаньона для геймеров"),
+        _album_part(3, old),
+        _album_part(4, old),
+    ]
+
+    results = await _read(messages, since=None)
+
+    assert len(results) == 1
+    assert results[0].text == "Китайцы придумали ИИ-компаньона для геймеров"
+    assert results[0].media is not None
+    assert results[0].media.kind == "album"
+    assert len(results[0].media.native_ref) == 3  # type: ignore[arg-type]
+
+
+async def test_first_read_takes_only_the_last_post_after_an_album() -> None:
+    old = _long_ago()
+    messages = [
+        _album_part(1, old, text="Старый альбом"),
+        _album_part(2, old),
+        _FakeTgMessage(3, "Текущее последнее сообщение", old),
+    ]
+
+    results = await _read(messages, since=None)
+
+    assert [r.text for r in results] == ["Текущее последнее сообщение"]
