@@ -23,6 +23,11 @@ ISourceRepository, IFilter, IDeduplicator, IEnricher, IPublisher, IStorage)
 Недоступность издателя (PublishUnavailableError) обрабатывается так же, но
 без паузы: прогон останавливается, курсор остаётся перед сообщением, и его
 повторит следующий прогон.
+
+Остановка процесса (request_stop) не обрывает сообщение на середине: текущее
+сообщение обрабатывается до конца, курсор сохраняется, а следующие сообщения
+и источники оставляются следующему запуску. Для сторожа зависаний пайплайн
+отмечает прогресс на каждом сообщении и источнике (seconds_since_progress).
 """
 
 from __future__ import annotations
@@ -90,6 +95,19 @@ class AggregatorPipeline:
         self._clock = clock
         # Момент (по clock), до которого все обращения к внешним сервисам приостановлены.
         self._paused_until = 0.0
+        self._stop_requested = False
+        self._progress_at = clock()
+
+    def request_stop(self) -> None:
+        """Просит текущий прогон остановиться на границе сообщения."""
+        self._stop_requested = True
+
+    def seconds_since_progress(self) -> float:
+        """Сколько секунд прогон не продвигался (по clock пайплайна)."""
+        return self._clock() - self._progress_at
+
+    def _mark_progress(self) -> None:
+        self._progress_at = self._clock()
 
     def _reader_for(self, source: Source) -> ISourceReader | None:
         for reader in self._readers:
@@ -258,6 +276,10 @@ class AggregatorPipeline:
 
         try:
             async for raw in reader.read_new_messages(source, last_external_id):
+                self._mark_progress()
+                if self._stop_requested:
+                    # Сообщение не обработано: курсор остаётся перед ним.
+                    break
                 if processed_count >= self._max_messages_per_source:
                     logger.warning(
                         "Достигнут лимит max_messages_per_source=%d для источника '%s'",
@@ -331,6 +353,7 @@ class AggregatorPipeline:
         перезапуска процесса.
         """
         stats = PipelineStats()
+        self._mark_progress()
         all_sources = await self._source_repository.list_sources()
         active_sources = [s for s in all_sources if s.enabled]
         stats.sources_total = len(active_sources)
@@ -344,6 +367,10 @@ class AggregatorPipeline:
             return stats
 
         for source in active_sources:
+            if self._stop_requested:
+                logger.info("Прогон прерван: процесс останавливается")
+                break
+            self._mark_progress()
             if await self._process_source(source, stats):
                 break
 

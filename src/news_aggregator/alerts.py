@@ -95,6 +95,12 @@ class AlertManager:
         await self._observe_publisher(stats)
         await self._observe_flood(stats)
 
+    async def notify(self, key: str, text: str) -> None:
+        """Разовое оповещение о проблеме вне статистики прогона (с cooldown)."""
+        if not self._config.enabled:
+            return
+        await self._send(key, text)
+
     # ------------------------------------------------------------------ источники
 
     async def _observe_sources(self, stats: PipelineStats) -> None:

@@ -270,3 +270,34 @@ def test_alerts_unknown_key_is_an_error_not_silently_ignored(tmp_path: Path) -> 
 def test_alerts_invalid_values_raise_config_error(tmp_path: Path, block: str) -> None:
     with pytest.raises(ConfigError):
         load_app_config(_alerts_config(tmp_path, "\n" + block))
+
+
+def test_stall_timeout_defaults_to_five_minutes(tmp_path: Path) -> None:
+    config = load_app_config(_write(tmp_path, VALID_YAML))
+
+    assert config.pipeline.stall_timeout_seconds == 300
+
+
+@pytest.mark.parametrize("value", [0, 120, 900])
+def test_stall_timeout_accepts_zero_or_large_values(tmp_path: Path, value: int) -> None:
+    yaml_text = VALID_YAML.replace(
+        "max_messages_per_source: 50",
+        f"max_messages_per_source: 50\n  stall_timeout_seconds: {value}",
+    )
+
+    config = load_app_config(_write(tmp_path, yaml_text))
+
+    assert config.pipeline.stall_timeout_seconds == value
+
+
+@pytest.mark.parametrize("value", [-1, 30, 119])
+def test_stall_timeout_shorter_than_telethon_flood_sleep_is_rejected(
+    tmp_path: Path, value: int
+) -> None:
+    yaml_text = VALID_YAML.replace(
+        "max_messages_per_source: 50",
+        f"max_messages_per_source: 50\n  stall_timeout_seconds: {value}",
+    )
+
+    with pytest.raises(ConfigError, match="stall_timeout_seconds"):
+        load_app_config(_write(tmp_path, yaml_text))

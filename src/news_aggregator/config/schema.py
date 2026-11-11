@@ -39,11 +39,17 @@ class StorageConfig:
 
 @dataclass(frozen=True, slots=True)
 class PipelineConfig:
-    """Общие настройки поведения пайплайна."""
+    """Общие настройки поведения пайплайна.
+
+    stall_timeout_seconds: если прогон столько секунд не продвигается ни на
+    одно сообщение или источник, процесс завершается с ошибкой, чтобы Docker
+    его перезапустил. 0 выключает сторожа.
+    """
 
     dry_run: bool = True
     poll_interval_seconds: int = 60
     max_messages_per_source: int = 100
+    stall_timeout_seconds: int = 300
 
 
 @dataclass(frozen=True, slots=True)

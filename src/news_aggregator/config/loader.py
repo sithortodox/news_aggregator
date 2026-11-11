@@ -72,6 +72,10 @@ def _resolve_sources(raw_items: list[object]) -> tuple[Source, ...]:
     return tuple(sources)
 
 
+# Telethon сам пережидает FloodWait до 60 с, не отдавая управление: порог
+# сторожа зависаний должен быть заметно больше.
+_MIN_STALL_TIMEOUT = 120
+
 _ALERTS_KEYS = {
     "enabled",
     "source_failure_threshold",
@@ -166,9 +170,17 @@ def load_app_config(path: str | Path) -> AppConfig:
             dry_run=bool(pipeline_raw.get("dry_run", True)),
             poll_interval_seconds=int(pipeline_raw.get("poll_interval_seconds", 60)),
             max_messages_per_source=int(pipeline_raw.get("max_messages_per_source", 100)),
+            stall_timeout_seconds=int(pipeline_raw.get("stall_timeout_seconds", 300)),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise ConfigError(f"Ошибка в структуре конфигурации: {exc}") from exc
+
+    if pipeline.stall_timeout_seconds != 0 and pipeline.stall_timeout_seconds < _MIN_STALL_TIMEOUT:
+        raise ConfigError(
+            f"pipeline.stall_timeout_seconds должен быть 0 (выключено) или не меньше "
+            f"{_MIN_STALL_TIMEOUT}: Telethon сам пережидает FloodWait до 60 с, и такая "
+            "пауза не должна считаться зависанием"
+        )
 
     if not publishers:
         raise ConfigError("Должен быть указан хотя бы один издатель (publishers)")

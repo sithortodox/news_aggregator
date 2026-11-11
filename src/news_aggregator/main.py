@@ -7,15 +7,19 @@
 
 Флаг --once выполняет один проход и завершается (удобно для cron/systemd
 timer). Без --once процесс работает в цикле с интервалом из
-pipeline.poll_interval_seconds, пока не будет остановлен (Ctrl+C).
+pipeline.poll_interval_seconds, пока не будет остановлен (Ctrl+C или
+SIGTERM от `docker stop`: текущее сообщение дорабатывается, затем выход).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
+import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -40,7 +44,7 @@ from news_aggregator.core.interfaces import (
     ISourceRepository,
     IStorage,
 )
-from news_aggregator.core.models import Source
+from news_aggregator.core.models import PipelineStats, Source
 from news_aggregator.core.pipeline import AggregatorPipeline
 from news_aggregator.core.registry import ComponentNotRegisteredError, ComponentRegistry
 from news_aggregator.healthcheck import heartbeat_path_for_db, write_heartbeat
@@ -52,6 +56,15 @@ if TYPE_CHECKING:
     from news_aggregator.bot.telegram_bot import AggregatorBot as AggregatorBotType
 
 logger = logging.getLogger("news_aggregator")
+
+# Как часто сторож зависаний проверяет прогресс прогона и сколько ждёт
+# отменённый прогон, прежде чем завершить процесс.
+_WATCHDOG_CHECK_SECONDS = 5.0
+_STALLED_RUN_CANCEL_SECONDS = 5.0
+
+
+class RunStalledError(RuntimeError):
+    """Прогон дольше stall_timeout_seconds не продвигается ни на сообщение, ни на источник."""
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -446,6 +459,48 @@ def _try_build_bot(
     )
 
 
+async def _run_watched(pipeline: AggregatorPipeline, stall_timeout_seconds: int) -> PipelineStats:
+    """run_once() под сторожем: если прогон не продвигается stall_timeout_seconds,
+    он отменяется и бросается RunStalledError.
+
+    Ограничивается не длительность прогона (после простоя он законно идёт долго),
+    а время без прогресса: зависший сетевой вызов Telethon без таймаута иначе
+    остановил бы цикл навсегда, а живой процесс Docker не перезапускает.
+    """
+    if stall_timeout_seconds <= 0:
+        return await pipeline.run_once()
+
+    task = asyncio.create_task(pipeline.run_once())
+    check = min(_WATCHDOG_CHECK_SECONDS, stall_timeout_seconds / 4)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=check)
+            if done:
+                return task.result()
+            idle = pipeline.seconds_since_progress()
+            if idle >= stall_timeout_seconds:
+                task.cancel()
+                await asyncio.wait({task}, timeout=_STALLED_RUN_CANCEL_SECONDS)
+                raise RunStalledError(f"прогон не продвигается {idle:.0f} с")
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
+def _install_stop_handlers(on_signal: Callable[[str], None]) -> list[signal.Signals]:
+    """Вешает on_signal на SIGTERM и SIGINT. Возвращает, что удалось повесить."""
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, on_signal, sig.name)
+        except (NotImplementedError, RuntimeError):
+            # Windows или не главный поток: остаётся поведение по умолчанию.
+            continue
+        installed.append(sig)
+    return installed
+
+
 async def _run_forever(
     pipeline: AggregatorPipeline,
     poll_interval_seconds: int,
@@ -453,6 +508,8 @@ async def _run_forever(
     heartbeat_path: Path | None,
     stats_store: IRunStatsStore | None = None,
     alert_manager: AlertManager | None = None,
+    *,
+    stall_timeout_seconds: int = 0,
 ) -> None:
     """Цикл постоянного опроса источников, опционально вместе с ботом
     управления каналами (оба крутятся в одном event loop).
@@ -466,13 +523,52 @@ async def _run_forever(
     Оповещения (alert_manager) обрабатываются ПОСЛЕ heartbeat: доставка — это
     сетевой вызов, и медленный Telegram не должен ложно сделать процесс
     «нездоровым». Сбой обработки оповещений цикл не останавливает.
+
+    SIGTERM (так останавливает контейнер `docker stop`) и SIGINT не обрывают
+    сообщение на середине: пайплайн дорабатывает текущее, сохраняет курсор, и
+    цикл завершается. Иначе Python в роли PID 1 сигнал игнорирует, и через
+    stop_grace_period Docker убивает процесс посреди публикации. Повторный
+    сигнал останавливает немедленно.
+
+    Если прогон завис (см. _run_watched), владельцу уходит оповещение, а
+    RunStalledError выходит наружу: процесс завершается с ошибкой, и Docker
+    его перезапускает.
     """
     stop_event = asyncio.Event()
     bot_task = asyncio.create_task(bot.run(stop_event)) if bot is not None else None
+    shutdown = asyncio.Event()
+    main_task = asyncio.current_task()
+
+    def on_signal(name: str) -> None:
+        if shutdown.is_set():
+            logger.warning("Повторный %s: останавливаюсь немедленно", name)
+            if main_task is not None:
+                main_task.cancel()
+            return
+        logger.info("Получен %s: дорабатываю текущее сообщение и останавливаюсь", name)
+        shutdown.set()
+        pipeline.request_stop()
+
+    installed = _install_stop_handlers(on_signal)
 
     try:
-        while True:
-            stats = await pipeline.run_once()
+        while not shutdown.is_set():
+            try:
+                stats = await _run_watched(pipeline, stall_timeout_seconds)
+            except RunStalledError as exc:
+                logger.error("Прогон завис (%s), завершаю процесс для перезапуска", exc)
+                if alert_manager is not None:
+                    try:
+                        await asyncio.wait_for(
+                            alert_manager.notify(
+                                "stalled",
+                                f"⚠️ Прогон завис: {exc}. Перезапускаю процесс.",
+                            ),
+                            timeout=_STALLED_RUN_CANCEL_SECONDS * 2,
+                        )
+                    except Exception:
+                        logger.exception("Не удалось отправить оповещение о зависании")
+                raise
             if stats_store is not None:
                 try:
                     await stats_store.record(stats)
@@ -485,10 +581,17 @@ async def _run_forever(
                     await alert_manager.observe(stats)
                 except Exception:
                     logger.exception("Сбой при обработке оповещений")
-            await asyncio.sleep(poll_interval_seconds)
+            if shutdown.is_set():
+                break
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(shutdown.wait(), timeout=poll_interval_seconds)
+        logger.info("Остановлено по сигналу")
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Остановлено пользователем")
     finally:
+        loop = asyncio.get_running_loop()
+        for sig in installed:
+            loop.remove_signal_handler(sig)
         if bot_task is not None:
             stop_event.set()
             await bot_task
@@ -569,14 +672,18 @@ async def _async_main(argv: list[str] | None = None) -> int:
         )
     else:
         logger.info("Оповещения о сбоях включены, доставка владельцу через бота")
-    await _run_forever(
-        pipeline,
-        config.pipeline.poll_interval_seconds,
-        bot,
-        heartbeat_path,
-        stats_store,
-        alert_manager,
-    )
+    try:
+        await _run_forever(
+            pipeline,
+            config.pipeline.poll_interval_seconds,
+            bot,
+            heartbeat_path,
+            stats_store,
+            alert_manager,
+            stall_timeout_seconds=config.pipeline.stall_timeout_seconds,
+        )
+    except RunStalledError:
+        return 1
     return 0
 
 

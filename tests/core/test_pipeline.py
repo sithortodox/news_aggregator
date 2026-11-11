@@ -295,3 +295,89 @@ async def test_posts_without_text_are_compared_by_file() -> None:
 
     assert [m.raw.external_id for m in publisher.published] == ["1", "2"]
     assert stats.messages_duplicate == 1
+
+
+class _StoppingPublisher(_RecordingPublisher):
+    """Как будто SIGTERM пришёл, пока публикуется первое сообщение."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pipeline: AggregatorPipeline | None = None
+
+    async def publish(self, message: ProcessedMessage) -> None:
+        await super().publish(message)
+        assert self.pipeline is not None
+        self.pipeline.request_stop()
+
+
+async def test_stop_request_finishes_current_message_and_keeps_the_rest() -> None:
+    first = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
+    second = Source(id="src2", kind=SourceKind.FAKE, identifier="src2", display_name="Src2")
+    publisher = _StoppingPublisher()
+    storage = InMemoryStorage()
+    pipeline = AggregatorPipeline(
+        source_repository=InMemorySourceRepository([first, second]),
+        readers=[
+            _ScriptedReader(
+                "src1",
+                [
+                    _msg("src1", "1", "Первая длинная новость"),
+                    _msg("src1", "2", "Вторая длинная новость"),
+                ],
+            ),
+            _ScriptedReader("src2", [_msg("src2", "1", "Новость второго канала")]),
+        ],
+        filters=[],
+        deduplicators=[TextHashDeduplicator(storage)],
+        enrichers=[],
+        publishers=[publisher],
+        storage=storage,
+        dry_run=False,
+    )
+    publisher.pipeline = pipeline
+
+    stats = await pipeline.run_once()
+
+    # Начатое сообщение доведено до конца и запомнено, курсор стоит на нём:
+    # второе сообщение и второй канал достанутся следующему запуску.
+    assert [m.raw.external_id for m in publisher.published] == ["1"]
+    assert stats.messages_published == 1
+    assert await storage.get_last_external_id("src1") == "1"
+    assert await storage.get_last_external_id("src2") is None
+
+
+async def test_progress_is_marked_per_message() -> None:
+    now = [100.0]
+    source = Source(id="src1", kind=SourceKind.FAKE, identifier="src1", display_name="Src1")
+    seen_idle: list[float] = []
+
+    class _ClockPublisher(_RecordingPublisher):
+        async def publish(self, message: ProcessedMessage) -> None:
+            seen_idle.append(pipeline.seconds_since_progress())
+            now[0] += 50.0
+
+    pipeline = AggregatorPipeline(
+        source_repository=InMemorySourceRepository([source]),
+        readers=[
+            _ScriptedReader(
+                "src1",
+                [
+                    _msg("src1", "1", "Первая длинная новость"),
+                    _msg("src1", "2", "Вторая длинная новость"),
+                ],
+            )
+        ],
+        filters=[],
+        deduplicators=[],
+        enrichers=[],
+        publishers=[_ClockPublisher()],
+        storage=InMemoryStorage(),
+        dry_run=False,
+        clock=lambda: now[0],
+    )
+
+    await pipeline.run_once()
+
+    # Второе сообщение снова отметило прогресс: простой не копится за весь прогон.
+    assert seen_idle == [0.0, 0.0]
+    assert pipeline.seconds_since_progress() == 50.0

@@ -528,3 +528,22 @@ async def test_alert_text_uses_correct_plural_for_source_and_publisher() -> None
 
     assert "3 прогона подряд" in sink.sent[0]
     assert "2 прогона подряд" in sink.sent[1]
+
+
+async def test_notify_sends_once_per_cooldown() -> None:
+    sink = _Sink()
+    manager = AlertManager(AlertsConfig(), sink, clock=_Clock())
+
+    await manager.notify("stalled", "Прогон завис")
+    await manager.notify("stalled", "Прогон завис")
+
+    assert len(sink.sent) == 1
+
+
+async def test_notify_is_silent_when_alerts_disabled() -> None:
+    sink = _Sink()
+    manager = AlertManager(AlertsConfig(enabled=False), sink, clock=_Clock())
+
+    await manager.notify("stalled", "Прогон завис")
+
+    assert sink.sent == []
