@@ -30,6 +30,7 @@ from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
 from news_aggregator.storage.sqlite_run_stats import SqliteRunStatsStore
 from news_aggregator.storage.sqlite_simhash_index import SqliteSimhashIndex
 from news_aggregator.storage.sqlite_source_repository import SqliteSourceRepository
+from news_aggregator.storage.sqlite_stem_frequency_index import SqliteStemFrequencyIndex
 from news_aggregator.storage.sqlite_storage import SqliteStorage
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,10 @@ def build_registry() -> ComponentRegistry:
     # Индекс отпечатков картинок для image_deduplicator (см.
     # storage/sqlite_image_hash_index.py)
     registry.image_hash_indexes.register("sqlite", SqliteImageHashIndex)
+
+    # Частоты основ слов для весового правила paraphrase_deduplicator (см.
+    # storage/sqlite_stem_frequency_index.py)
+    registry.stem_frequency_indexes.register("sqlite", SqliteStemFrequencyIndex)
 
     # История прогонов для /stats бота (storage/sqlite_run_stats.py)
     registry.run_stats_stores.register("sqlite", SqliteRunStatsStore)

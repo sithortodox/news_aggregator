@@ -85,6 +85,27 @@ def normalize_text(text: str) -> str:
     return normalized
 
 
+_PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n")
+_WORD_RE = re.compile(r"\w+", flags=re.UNICODE)
+# Последний абзац из стольких слов или короче считается подписью канала.
+_SIGNATURE_MAX_WORDS = 3
+
+
+def strip_signature(text: str) -> str:
+    """Убирает подпись канала: последний абзац длиной до трёх слов.
+
+    «👍 Бэкдор», «🌒 1337», «Подписаться | Чат» есть у каждого поста канала и
+    при сравнении пересказов только мешают: у разных каналов подписи разные,
+    у постов одного канала одинаковые. Короткий последний абзац, который
+    подписью не был, при сравнении почти ничего не весит. Текст из одного
+    абзаца не меняется.
+    """
+    paragraphs = [p for p in _PARAGRAPH_BREAK_RE.split(text.strip()) if p.strip()]
+    if len(paragraphs) > 1 and len(_WORD_RE.findall(paragraphs[-1])) <= _SIGNATURE_MAX_WORDS:
+        paragraphs = paragraphs[:-1]
+    return "\n\n".join(paragraphs)
+
+
 def compute_text_hash(normalized_text: str) -> str:
     """Считает sha256-хэш нормализованного текста (в hex-представлении)."""
     return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()

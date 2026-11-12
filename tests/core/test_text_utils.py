@@ -2,6 +2,7 @@ from news_aggregator.core.text_utils import (
     compute_text_hash,
     extract_links,
     normalize_text,
+    strip_signature,
 )
 
 
@@ -92,3 +93,14 @@ def test_normalize_text_with_hashtag_and_mention_matches_plain_version() -> None
     plain = "Курс доллара резко вырос сегодня утром"
     decorated = "Курс доллара резко вырос сегодня утром #экономика @repost_channel"
     assert normalize_text(plain) == normalize_text(decorated)
+
+
+def test_strip_signature_drops_short_last_paragraph() -> None:
+    assert strip_signature("Новость про Хуанга.\n\n👍 Бэкдор") == "Новость про Хуанга."
+    assert strip_signature("Новость.\n\n🌒 1337\n") == "Новость."
+
+
+def test_strip_signature_keeps_long_last_paragraph_and_single_paragraph() -> None:
+    text = "Первый абзац.\n\nВторой абзац, в котором больше трёх слов."
+    assert strip_signature(text) == text
+    assert strip_signature("👍 Бэкдор") == "👍 Бэкдор"

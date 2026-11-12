@@ -7,6 +7,7 @@ from news_aggregator.core.models import ProcessedMessage, RawMessage
 from news_aggregator.core.text_utils import compute_text_hash, extract_links, normalize_text
 from news_aggregator.dedup.paraphrase_deduplicator import ParaphraseDeduplicator
 from tests.support.in_memory_lemma_index import InMemoryLemmaIndex
+from tests.support.in_memory_stem_frequency_index import InMemoryStemFrequencyIndex
 
 
 def _make_message(text: str, external_id: str = "1") -> ProcessedMessage:
@@ -256,3 +257,144 @@ def test_new_parameters_are_validated(params: dict[str, object]) -> None:
 
 def test_stem_length_none_means_no_truncation() -> None:
     _d(stem_length=None)  # не должно падать
+
+
+# Регрессия: my_news_agregator_channel 9305 (Бэкдор) и 9308 (1337) — один
+# пересказ, общих основ всего три, обычный Жаккар 0.17 их не склеивал.
+_BACKDOOR = (
+    "⚡️ У Хуанга была и третья любовница — СМИ. Любитель кожаных курток и уже "
+    "экс-CEO NVIDIA, похоже, собрал целый гарем из сотрудниц.\n\n👍 Бэкдор"
+)
+_MEDIA1337 = "У Хуанга нашли ещё одну любовницу, уже третью по счёту — Reuters.\n\n🌒 1337"
+
+
+def _from_source(text: str, source_id: str, external_id: str) -> ProcessedMessage:
+    message = _make_message(text, external_id)
+    raw = RawMessage(
+        source_id=source_id,
+        external_id=external_id,
+        text=text,
+        posted_at=message.raw.posted_at,
+        fetched_at=message.raw.fetched_at,
+    )
+    return ProcessedMessage(
+        raw=raw,
+        normalized_text=message.normalized_text,
+        text_hash=message.text_hash,
+        links=message.links,
+    )
+
+
+def _weighted(
+    frequencies: InMemoryStemFrequencyIndex, *, dry_run: bool = False, min_documents: int = 300
+) -> ParaphraseDeduplicator:
+    return ParaphraseDeduplicator(
+        InMemoryLemmaIndex(),
+        frequency_index=frequencies,
+        weighted_min_jaccard=0.15,
+        weighted_min_documents=min_documents,
+        weighted_dry_run=dry_run,
+    )
+
+
+async def _publish_then_check(dedup: ParaphraseDeduplicator) -> tuple[bool, str]:
+    first = _from_source(_BACKDOOR, "whackdoor", "32919")
+    assert (await dedup.check(first)).is_duplicate is False
+    await dedup.remember(first)
+    result = await dedup.check(_from_source(_MEDIA1337, "media1337", "29138"))
+    return result.is_duplicate, result.reason
+
+
+async def test_plain_jaccard_misses_the_retelling() -> None:
+    is_duplicate, _ = await _publish_then_check(ParaphraseDeduplicator(InMemoryLemmaIndex()))
+    assert is_duplicate is False
+
+
+async def test_weighted_rule_catches_retelling_sharing_rare_words() -> None:
+    is_duplicate, reason = await _publish_then_check(
+        _weighted(InMemoryStemFrequencyIndex(total=1000))
+    )
+
+    assert is_duplicate is True
+    assert "весовой Жаккар" in reason
+    assert "хуанг" in reason
+
+
+async def test_shared_common_words_weigh_little() -> None:
+    # Если эти слова есть в половине постов, совпадение по ним ничего не значит.
+    common = {"хуанг": 500, "любов": 500, "трети": 500}
+
+    is_duplicate, _ = await _publish_then_check(
+        _weighted(InMemoryStemFrequencyIndex(total=1000, counts=common))
+    )
+
+    assert is_duplicate is False
+
+
+async def test_dry_run_only_reports(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+
+    is_duplicate, reason = await _publish_then_check(
+        _weighted(InMemoryStemFrequencyIndex(total=1000), dry_run=True)
+    )
+
+    assert is_duplicate is False
+    assert "пробно" in reason
+    assert "Пересказ (пробно, не отброшено): media1337/29138" in caplog.text
+
+
+async def test_weighted_rule_waits_for_enough_statistics() -> None:
+    is_duplicate, _ = await _publish_then_check(
+        _weighted(InMemoryStemFrequencyIndex(total=10), min_documents=300)
+    )
+
+    assert is_duplicate is False
+
+
+async def test_each_message_is_counted_once() -> None:
+    frequencies = InMemoryStemFrequencyIndex()
+    dedup = _weighted(frequencies)
+    message = _from_source(_BACKDOOR, "whackdoor", "1")
+
+    await dedup.check(message)
+    await dedup.check(message)  # повторная проверка после паузы на FloodWait
+
+    assert frequencies.total == 1
+    assert frequencies.counts["хуанг"] == 1
+    assert "бэкдо" not in frequencies.counts  # подпись канала не учитывается
+
+
+async def test_frequencies_are_loaded_from_the_index() -> None:
+    frequencies = InMemoryStemFrequencyIndex(total=1000)
+    dedup = _weighted(frequencies)
+
+    await dedup.check(_from_source(_BACKDOOR, "whackdoor", "1"))
+
+    assert frequencies.total == 1001
+
+
+def test_weighted_rule_needs_frequency_index() -> None:
+    with pytest.raises(ValueError, match="frequency_index"):
+        ParaphraseDeduplicator(InMemoryLemmaIndex(), weighted_min_jaccard=0.15)
+
+
+@pytest.mark.parametrize("value", [0.0, 1.5])
+def test_weighted_threshold_is_validated(value: float) -> None:
+    with pytest.raises(ValueError, match="weighted_min_jaccard"):
+        ParaphraseDeduplicator(
+            InMemoryLemmaIndex(),
+            frequency_index=InMemoryStemFrequencyIndex(),
+            weighted_min_jaccard=value,
+        )
+
+
+async def test_channel_signature_is_ignored() -> None:
+    # Без подписей «👍 Бэкдор» и «🌒 1337» — те же основы, что и с ними.
+    index = InMemoryLemmaIndex()
+    dedup = ParaphraseDeduplicator(index)
+    await dedup.remember(_from_source(_BACKDOOR, "whackdoor", "1"))
+
+    (saved,) = await index.find_recent(datetime.now(UTC) - timedelta(hours=1))
+
+    assert "бэкдор" not in saved
+    assert "хуанг" in {lemma[:5] for lemma in saved}

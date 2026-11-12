@@ -8,6 +8,10 @@
 от пайплайна, показывает вердикт КАЖДОГО слоя, а не только первого сработавшего,
 и подробности сравнения по леммам. Ничего не пишет в БД и не ходит в сеть.
 
+Весовое правило paraphrase_deduplicator (weighted_min_jaccard) работает только
+с частотами слов. С --frequencies data/state.db они читаются из боевой базы
+(только чтение, база не меняется), без него правило молчит.
+
 Нужен, чтобы разобрать конкретный пропущенный дубль или ложное срабатывание
 и подобрать пороги по реальным примерам, а не вслепую.
 """
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sqlite3
 import sys
 from datetime import UTC, datetime
 from typing import cast
@@ -27,6 +32,7 @@ from news_aggregator.core.interfaces import (
     IImageHashIndex,
     ILemmaSetIndex,
     ISimhashIndex,
+    IStemFrequencyIndex,
     IStorage,
 )
 from news_aggregator.core.lemmatize import extract_lemma_set, numbers_in, stem_set
@@ -123,7 +129,31 @@ def _message(text: str, ident: str) -> ProcessedMessage:
     )
 
 
-def _build_layers(config_path: str) -> list[IDeduplicator]:
+class _SnapshotFrequencyIndex(IStemFrequencyIndex):
+    """Частоты слов из боевой базы, открытой только на чтение; add() ничего не пишет."""
+
+    def __init__(self, db_path: str | None, table_name: str = "stem_frequencies") -> None:
+        self._db_path = db_path
+        self._table_name = table_name
+
+    async def load(self) -> tuple[int, dict[str, int]]:
+        if self._db_path is None:
+            return 0, {}
+        conn = sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                f"SELECT stem, documents FROM {self._table_name}"  # noqa: S608
+            ).fetchall()
+        finally:
+            conn.close()
+        counts = {str(stem): int(documents) for stem, documents in rows}
+        return counts.pop("", 0), counts
+
+    async def add(self, stems: frozenset[str]) -> None:
+        return None
+
+
+def _build_layers(config_path: str, frequencies_db: str | None = None) -> list[IDeduplicator]:
     config = load_app_config(config_path)
     registry = build_registry()
     storage = _MemoryStorage()
@@ -135,6 +165,13 @@ def _build_layers(config_path: str) -> list[IDeduplicator]:
             kwargs: dict[str, object] = {"index": simhash_index}
         elif component.name == "paraphrase_deduplicator":
             kwargs = {"index": lemma_index}
+            params = dict(component.params)
+            table = str(params.pop("frequency_table", "stem_frequencies"))
+            if params.get("weighted_min_jaccard") is not None:
+                kwargs["frequency_index"] = _SnapshotFrequencyIndex(frequencies_db, table)
+            created = registry.deduplicators.create(component.name, **kwargs, **params)
+            layers.append(cast(IDeduplicator, created))
+            continue
         elif component.name == "image_deduplicator":
             # Сравниваются только тексты: картинок у dedup_explain нет.
             kwargs = {"index": _MemoryImageHashIndex(), "hasher": None}
@@ -160,9 +197,11 @@ def _lemma_details(first: str, second: str, layer: object) -> list[str]:
     ]
 
 
-async def explain(first: str, second: str, config_path: str) -> tuple[str, bool]:
+async def explain(
+    first: str, second: str, config_path: str, frequencies_db: str | None = None
+) -> tuple[str, bool]:
     """Возвращает (текст отчёта, признан ли второй текст дублем хотя бы одним слоем)."""
-    layers = _build_layers(config_path)
+    layers = _build_layers(config_path, frequencies_db)
     published, candidate = _message(first, "A"), _message(second, "B")
     for layer in layers:
         await layer.remember(published)
@@ -200,10 +239,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("first", help="текст уже опубликованного поста (A)")
     parser.add_argument("second", help="новый текст, который проверяется (B)")
     parser.add_argument("--config", default="config/config.yaml", help="Путь к config.yaml")
+    parser.add_argument(
+        "--frequencies",
+        default=None,
+        help="База с частотами слов для весового правила (например data/state.db), только чтение",
+    )
     args = parser.parse_args(argv)
     try:
-        report, _ = asyncio.run(explain(args.first, args.second, args.config))
-    except (ConfigError, ValueError) as exc:
+        report, _ = asyncio.run(explain(args.first, args.second, args.config, args.frequencies))
+    except (ConfigError, ValueError, sqlite3.Error) as exc:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 1
     print(report)

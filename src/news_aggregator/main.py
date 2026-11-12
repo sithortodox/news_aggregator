@@ -132,9 +132,14 @@ def _build_deduplicators(
         elif c.name == "paraphrase_deduplicator":
             params = dict(c.params)
             index_name = str(params.pop("index_name", "seen_lemma_sets"))
+            frequency_table = str(params.pop("frequency_table", "stem_frequencies"))
             if index_name not in lemma_index_cache:
                 lemma_index_cache[index_name] = registry.lemma_indexes.create(  # type: ignore[assignment]
                     "sqlite", db_path=shared_db_path, table_name=index_name
+                )
+            if params.get("weighted_min_jaccard") is not None:
+                params["frequency_index"] = registry.stem_frequency_indexes.create(
+                    "sqlite", db_path=shared_db_path, table_name=frequency_table
                 )
             created = registry.deduplicators.create(
                 c.name, index=lemma_index_cache[index_name], **params
