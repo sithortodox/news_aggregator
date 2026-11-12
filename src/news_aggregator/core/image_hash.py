@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import io
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 HASH_SIZE = 16
+
+# Ниже этого разброса яркости (стандартное отклонение, 0–255) картинка считается
+# пустой: чёрный или белый кадр, однотонная заливка. У таких картинок dHash
+# состоит из шума сжатия, и разные видео, начинающиеся с чёрного кадра,
+# совпали бы между собой.
+MIN_CONTRAST = 5.0
 
 
 def dhash(data: bytes, hash_size: int = HASH_SIZE) -> int:
@@ -32,6 +38,15 @@ def dhash(data: bytes, hash_size: int = HASH_SIZE) -> int:
         for col in range(hash_size):
             value = (value << 1) | (pixels[offset + col] > pixels[offset + col + 1])
     return value
+
+
+def informative_dhash(data: bytes, hash_size: int = HASH_SIZE) -> int | None:
+    """dHash картинки или None, если картинка почти однотонная и сравнивать нечего."""
+    with Image.open(io.BytesIO(data)) as image:
+        contrast = ImageStat.Stat(image.convert("L")).stddev[0]
+    if contrast < MIN_CONTRAST:
+        return None
+    return dhash(data, hash_size)
 
 
 def hamming_distance(first: int, second: int) -> int:

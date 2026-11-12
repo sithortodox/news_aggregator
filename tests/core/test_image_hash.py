@@ -2,7 +2,7 @@ import io
 
 from PIL import Image, ImageDraw
 
-from news_aggregator.core.image_hash import dhash, hamming_distance
+from news_aggregator.core.image_hash import dhash, hamming_distance, informative_dhash
 
 
 def _screenshot(text: str, size: tuple[int, int] = (725, 430)) -> Image.Image:
@@ -49,3 +49,15 @@ def test_different_pictures_are_far_apart() -> None:
 def test_hamming_distance_counts_differing_bits() -> None:
     assert hamming_distance(0b1011, 0b0001) == 2
     assert hamming_distance(5, 5) == 0
+
+
+def test_informative_dhash_skips_blank_pictures() -> None:
+    def jpeg(image: Image.Image) -> bytes:
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG")
+        return buffer.getvalue()
+
+    assert informative_dhash(jpeg(Image.new("RGB", (320, 180), (0, 0, 0)))) is None
+    assert informative_dhash(jpeg(Image.new("RGB", (320, 180), (250, 250, 250)))) is None
+    gradient = jpeg(Image.linear_gradient("L").resize((320, 180)))
+    assert informative_dhash(gradient) == dhash(gradient)
