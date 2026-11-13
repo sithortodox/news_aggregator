@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 
 from news_aggregator.core.registry import ComponentRegistry
+from news_aggregator.dedup.embedding_deduplicator import EmbeddingDeduplicator
 from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.dedup.image_deduplicator import ImageDeduplicator
 from news_aggregator.dedup.link_deduplicator import LinkDeduplicator
@@ -25,6 +26,7 @@ from news_aggregator.filters.length_filter import LengthFilter
 from news_aggregator.filters.utm_filter import UtmSourceFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
+from news_aggregator.storage.sqlite_embedding_index import SqliteEmbeddingIndex
 from news_aggregator.storage.sqlite_image_hash_index import SqliteImageHashIndex
 from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
 from news_aggregator.storage.sqlite_run_stats import SqliteRunStatsStore
@@ -53,6 +55,7 @@ def build_registry() -> ComponentRegistry:
     registry.deduplicators.register("link_deduplicator", LinkDeduplicator)
     registry.deduplicators.register("simhash_deduplicator", SimHashDeduplicator)
     registry.deduplicators.register("paraphrase_deduplicator", ParaphraseDeduplicator)
+    registry.deduplicators.register("embedding_deduplicator", EmbeddingDeduplicator)
     registry.deduplicators.register("image_deduplicator", ImageDeduplicator)
 
     # Обогатители: пока нет ни одного встроенного (Stage вне рамок MVP),
@@ -87,12 +90,31 @@ def build_registry() -> ComponentRegistry:
     # storage/sqlite_stem_frequency_index.py)
     registry.stem_frequency_indexes.register("sqlite", SqliteStemFrequencyIndex)
 
+    # Векторы постов для embedding_deduplicator (storage/sqlite_embedding_index.py)
+    registry.embedding_indexes.register("sqlite", SqliteEmbeddingIndex)
+    _try_register_embedder(registry)
+
     # История прогонов для /stats бота (storage/sqlite_run_stats.py)
     registry.run_stats_stores.register("sqlite", SqliteRunStatsStore)
 
     _try_register_telegram(registry)
 
     return registry
+
+
+def _try_register_embedder(registry: ComponentRegistry) -> None:
+    """Регистрирует ONNX-модель, если установлены onnxruntime и sentencepiece
+    (extra «embeddings»; в Docker-образе ставится всегда)."""
+    try:
+        import numpy  # noqa: F401
+        import onnxruntime  # noqa: F401
+        import sentencepiece  # noqa: F401
+
+        from news_aggregator.embedding.onnx_embedder import OnnxTextEmbedder
+    except ImportError:
+        logger.debug("onnxruntime/sentencepiece не установлены: сравнение по смыслу недоступно")
+        return
+    registry.text_embedders.register("onnx", OnnxTextEmbedder)
 
 
 def _try_register_telegram(registry: ComponentRegistry) -> None:

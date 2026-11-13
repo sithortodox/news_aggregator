@@ -8,12 +8,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Модель для сравнения по смыслу (~125 МБ, ревизии и SHA-256 закреплены в
+# скрипте). Отдельный слой до кода: модель не скачивается заново при каждой
+# правке исходников.
+COPY src/news_aggregator/embedding/download.py /tmp/download_model.py
+RUN python /tmp/download_model.py /app/models && rm /tmp/download_model.py
+
 # Сначала только файлы, нужные для установки зависимостей — так слой с
 # зависимостями кэшируется и не пересобирается при каждом изменении кода.
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[embeddings]"
 
 # Конфигурация копируется в образ как значение по умолчанию; в проде обычно
 # монтируется поверх volume-ом (см. docker-compose.yml), чтобы менять

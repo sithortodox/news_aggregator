@@ -44,6 +44,7 @@ from news_aggregator.core.interfaces import (
     ISourceReader,
     ISourceRepository,
     IStorage,
+    ITextEmbedder,
 )
 from news_aggregator.core.models import PipelineStats, Source
 from news_aggregator.core.pipeline import AggregatorPipeline
@@ -101,6 +102,25 @@ def _build_filters(registry: ComponentRegistry, config: AppConfig) -> list[IFilt
     ]
 
 
+# Куда Dockerfile кладёт модель (см. embedding/download.py).
+_DEFAULT_MODEL_DIR = "/app/models/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def _build_embedder(registry: ComponentRegistry, model_dir: str) -> ITextEmbedder | None:
+    """Модель для сравнения по смыслу или None (слой тогда ничего не отбрасывает)."""
+    if "onnx" not in registry.text_embedders.available():
+        logger.warning(
+            "embedding_deduplicator: не установлены onnxruntime/sentencepiece "
+            "(pip install '.[embeddings]'), сравнение по смыслу выключено"
+        )
+        return None
+    try:
+        return cast(ITextEmbedder, registry.text_embedders.create("onnx", model_dir=model_dir))
+    except FileNotFoundError as exc:
+        logger.warning("embedding_deduplicator: %s, сравнение по смыслу выключено", exc)
+        return None
+
+
 def _build_deduplicators(
     registry: ComponentRegistry,
     config: AppConfig,
@@ -143,6 +163,18 @@ def _build_deduplicators(
                 )
             created = registry.deduplicators.create(
                 c.name, index=lemma_index_cache[index_name], **params
+            )
+        elif c.name == "embedding_deduplicator":
+            params = dict(c.params)
+            index_name = str(params.pop("index_name", "seen_embeddings"))
+            model_dir = str(params.pop("model_dir", _DEFAULT_MODEL_DIR))
+            created = registry.deduplicators.create(
+                c.name,
+                index=registry.embedding_indexes.create(
+                    "sqlite", db_path=shared_db_path, table_name=index_name
+                ),
+                embedder=_build_embedder(registry, model_dir),
+                **params,
             )
         elif c.name == "image_deduplicator":
             params = dict(c.params)

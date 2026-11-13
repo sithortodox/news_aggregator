@@ -76,5 +76,7 @@ class ComponentRegistry:
         self.lemma_indexes: TypedRegistry[object] = TypedRegistry("lemma_indexes")
         self.image_hash_indexes: TypedRegistry[object] = TypedRegistry("image_hash_indexes")
         self.stem_frequency_indexes: TypedRegistry[object] = TypedRegistry("stem_frequency_indexes")
+        self.embedding_indexes: TypedRegistry[object] = TypedRegistry("embedding_indexes")
+        self.text_embedders: TypedRegistry[object] = TypedRegistry("text_embedders")
         self.image_hashers: TypedRegistry[object] = TypedRegistry("image_hashers")
         self.run_stats_stores: TypedRegistry[object] = TypedRegistry("run_stats_stores")

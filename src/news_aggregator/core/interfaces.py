@@ -14,6 +14,7 @@ from datetime import datetime
 
 from news_aggregator.core.models import (
     DeduplicationResult,
+    EmbeddingRecord,
     ImageHashRecord,
     MediaAttachment,
     PipelineStats,
@@ -334,3 +335,31 @@ class IStemFrequencyIndex(ABC):
     @abstractmethod
     async def add(self, stems: frozenset[str]) -> None:
         """Учитывает ещё одно сообщение с этими основами."""
+
+
+class ITextEmbedder(ABC):
+    """Переводит текст в смысловой вектор: пересказы одного события близки.
+
+    Реализация отвечает за модель и её загрузку; вызывается из потока
+    (asyncio.to_thread), поэтому embed() синхронный.
+    """
+
+    @abstractmethod
+    def embed(self, text: str) -> tuple[float, ...]:
+        """Нормированный вектор текста (длина 1): косинус = скалярное произведение."""
+
+
+class IEmbeddingIndex(ABC):
+    """Векторы недавно опубликованных постов для EmbeddingDeduplicator."""
+
+    @abstractmethod
+    async def find_recent(self, since: datetime) -> list[EmbeddingRecord]:
+        """Записи, сохранённые с since."""
+
+    @abstractmethod
+    async def save(self, record: EmbeddingRecord, external_id: str) -> None:
+        """Сохраняет вектор поста с текущей меткой времени."""
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        """Удаляет записи старше cutoff. Возвращает число удалённых."""

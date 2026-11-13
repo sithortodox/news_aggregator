@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sqlite3
 import sys
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from news_aggregator.bootstrap import build_registry
 from news_aggregator.config.loader import ConfigError, load_app_config
 from news_aggregator.core.interfaces import (
     IDeduplicator,
+    IEmbeddingIndex,
     IImageHashIndex,
     ILemmaSetIndex,
     ISimhashIndex,
@@ -36,7 +38,12 @@ from news_aggregator.core.interfaces import (
     IStorage,
 )
 from news_aggregator.core.lemmatize import extract_lemma_set, numbers_in, stem_set
-from news_aggregator.core.models import ImageHashRecord, ProcessedMessage, RawMessage
+from news_aggregator.core.models import (
+    EmbeddingRecord,
+    ImageHashRecord,
+    ProcessedMessage,
+    RawMessage,
+)
 from news_aggregator.core.text_utils import compute_text_hash, extract_links, normalize_text
 
 
@@ -129,6 +136,24 @@ def _message(text: str, ident: str) -> ProcessedMessage:
     )
 
 
+class _MemoryEmbeddingIndex(IEmbeddingIndex):
+    def __init__(self) -> None:
+        self._items: list[EmbeddingRecord] = []
+
+    async def find_recent(self, since: datetime) -> list[EmbeddingRecord]:
+        return list(self._items)
+
+    async def save(self, record: EmbeddingRecord, external_id: str) -> None:
+        self._items.append(record)
+
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        return 0
+
+
+# Модель в Docker-образе; для запуска вне контейнера model_dir задаётся в config.yaml.
+_MODEL_DIR = "/app/models/paraphrase-multilingual-MiniLM-L12-v2"
+
+
 class _SnapshotFrequencyIndex(IStemFrequencyIndex):
     """Частоты слов из боевой базы, открытой только на чтение; add() ничего не пишет."""
 
@@ -170,6 +195,18 @@ def _build_layers(config_path: str, frequencies_db: str | None = None) -> list[I
             if params.get("weighted_min_jaccard") is not None:
                 kwargs["frequency_index"] = _SnapshotFrequencyIndex(frequencies_db, table)
             created = registry.deduplicators.create(component.name, **kwargs, **params)
+            layers.append(cast(IDeduplicator, created))
+            continue
+        elif component.name == "embedding_deduplicator":
+            params = dict(component.params)
+            params.pop("index_name", None)
+            model_dir = str(params.pop("model_dir", _MODEL_DIR))
+            embedder = None
+            if "onnx" in registry.text_embedders.available() and os.path.isdir(model_dir):
+                embedder = registry.text_embedders.create("onnx", model_dir=model_dir)
+            created = registry.deduplicators.create(
+                component.name, index=_MemoryEmbeddingIndex(), embedder=embedder, **params
+            )
             layers.append(cast(IDeduplicator, created))
             continue
         elif component.name == "image_deduplicator":

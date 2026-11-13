@@ -211,3 +211,18 @@ class StatsSummary:
     runs_with_failures: int = 0
     sources_failed_total: int = 0
     last_run_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingRecord:
+    """Смысловой вектор недавно опубликованного поста (см. IEmbeddingIndex).
+
+    Attributes:
+        vector: Нормированный вектор текста (длина 1), см. ITextEmbedder.
+        source_id: Источник поста: сравниваются только посты разных каналов.
+        stems: Основы лемм текста — для проверки, что у текстов есть общие слова.
+    """
+
+    vector: tuple[float, ...]
+    source_id: str
+    stems: frozenset[str]
