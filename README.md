@@ -968,11 +968,13 @@ nano config/config.yaml   # добавьте свои каналы (см. раз
    docker compose logs -f   # проверить, что всё поднялось
    ```
 
-Обновление кода после `git pull`:
+Обновление кода: `deploy/deploy.sh` делает `git pull`, проверяет конфиг на
+новом образе, перезапускает контейнер и удаляет старый образ и кэш сборки
+(каждая сборка оставляет сотни мегабайт, а диск у небольшого VPS — 10 ГБ):
 
 ```bash
-git pull
-docker compose up -d --build
+nohup ~/news_aggregator/deploy/deploy.sh > /tmp/deploy.log 2>&1 &
+tail -f /tmp/deploy.log   # в конце — DEPLOY_OK и свободное место на диске
 ```
 
 ### Вариант B: без Docker, через systemd
@@ -1127,6 +1129,9 @@ git pull
 docker compose run --rm --build news-aggregator --config config/config.yaml --validate-config \
   && docker compose up -d --build
 ```
+
+То же самое, плюс уборка старого образа и кэша сборки, делает
+`deploy/deploy.sh`.
 
 `--build` в `docker compose run` обязателен: без него команда выполнится на
 **старом** образе (Compose не пересобирает образ для `run` сам по себе), и
