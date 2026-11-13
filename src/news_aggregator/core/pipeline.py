@@ -62,6 +62,11 @@ _RATE_LIMIT_MARGIN_SECONDS = 1.0
 _MAX_ERROR_TEXT = 300
 
 
+# Сообщение рядом с рекламой длиннее этого — самостоятельный пост, а не кусок
+# рекламного (см. AggregatorPipeline._ad_marks).
+_AD_NEIGHBOUR_MAX_CHARS = 300
+
+
 def _short_error(text: str) -> str:
     return text if len(text) <= _MAX_ERROR_TEXT else text[: _MAX_ERROR_TEXT - 1] + "…"
 
@@ -81,6 +86,7 @@ class AggregatorPipeline:
         max_messages_per_source: int = 100,
         dry_run: bool = True,
         *,
+        ad_burst_seconds: int = 0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._source_repository = source_repository
@@ -92,6 +98,7 @@ class AggregatorPipeline:
         self._storage = storage
         self._max_messages_per_source = max_messages_per_source
         self._dry_run = dry_run
+        self._ad_burst_seconds = ad_burst_seconds
         self._clock = clock
         # Момент (по clock), до которого все обращения к внешним сервисам приостановлены.
         self._paused_until = 0.0
@@ -127,26 +134,61 @@ class AggregatorPipeline:
             links=extract_links(raw.text),
         )
 
-    def _apply_filters(self, message: ProcessedMessage) -> ProcessedMessage:
+    def _apply_filters(
+        self, message: ProcessedMessage, ad_neighbour: str | None = None
+    ) -> ProcessedMessage:
+        """Прогоняет фильтры. ad_neighbour — сообщение того же рекламного поста
+        (см. _ad_marks): его отсеивают, если не отсеял ни один фильтр."""
+        dropped_by: tuple[str, str | None] | None = None
         for flt in self._filters:
             should_drop, reason = flt.should_drop(message)
             if should_drop:
-                logger.info(
-                    "Сообщение %s/%s отфильтровано (%s): %s",
-                    message.raw.source_id,
-                    message.raw.external_id,
-                    flt.name,
-                    reason,
-                )
-                return ProcessedMessage(
-                    raw=message.raw,
-                    normalized_text=message.normalized_text,
-                    text_hash=message.text_hash,
-                    links=message.links,
-                    is_filtered_out=True,
-                    filter_reason=f"{flt.name}: {reason}",
-                )
-        return message
+                dropped_by = (flt.name, reason)
+                break
+        if dropped_by is None and ad_neighbour is not None:
+            dropped_by = ("ad_burst", f"соседнее сообщение рекламного поста {ad_neighbour}")
+        if dropped_by is None:
+            return message
+        name, reason = dropped_by
+        logger.info(
+            "Сообщение %s/%s отфильтровано (%s): %s",
+            message.raw.source_id,
+            message.raw.external_id,
+            name,
+            reason,
+        )
+        return ProcessedMessage(
+            raw=message.raw,
+            normalized_text=message.normalized_text,
+            text_hash=message.text_hash,
+            links=message.links,
+            is_filtered_out=True,
+            filter_reason=f"{name}: {reason}",
+        )
+
+    def _is_ad(self, raw: RawMessage) -> bool:
+        message = self._process_raw_message(raw)
+        return any(flt.detects_ads and flt.should_drop(message)[0] for flt in self._filters)
+
+    def _ad_marks(self, burst: list[RawMessage]) -> list[str | None]:
+        """Для каждого сообщения пачки — id рекламного сообщения той же пачки
+        (другого), если оно есть и само сообщение короткое, иначе None.
+
+        Длинное сообщение рядом с рекламой — скорее отдельная новость, вышедшая
+        в ту же секунду (отложенные посты), чем кусок рекламного поста."""
+        if len(burst) < 2:
+            return [None] * len(burst)
+        ads = [raw.external_id for raw in burst if self._is_ad(raw)]
+        return [
+            next((ad for ad in ads if ad != raw.external_id), None)
+            if len(raw.text) <= _AD_NEIGHBOUR_MAX_CHARS
+            else None
+            for raw in burst
+        ]
+
+    def _same_burst(self, previous: RawMessage, raw: RawMessage) -> bool:
+        gap = abs((raw.posted_at - previous.posted_at).total_seconds())
+        return gap <= self._ad_burst_seconds
 
     async def _apply_enrichers(self, message: ProcessedMessage) -> ProcessedMessage:
         for enricher in self._enrichers:
@@ -274,23 +316,18 @@ class AggregatorPipeline:
         processed_count = 0
         stop_run = False
 
-        try:
-            async for raw in reader.read_new_messages(source, last_external_id):
-                self._mark_progress()
-                if self._stop_requested:
-                    # Сообщение не обработано: курсор остаётся перед ним.
-                    break
-                if processed_count >= self._max_messages_per_source:
-                    logger.warning(
-                        "Достигнут лимит max_messages_per_source=%d для источника '%s'",
-                        self._max_messages_per_source,
-                        source.id,
-                    )
-                    break
-                processed_count += 1
+        # Сообщения, отправленные каналом подряд (не дальше ad_burst_seconds друг
+        # от друга), копятся в пачку и обрабатываются вместе: если одно из них —
+        # реклама, отсеиваются все (см. _ad_marks). При ad_burst_seconds=0
+        # каждое сообщение — своя пачка.
+        burst: list[RawMessage] = []
 
+        async def handle_burst() -> None:
+            nonlocal newest_external_id
+            marks = self._ad_marks(burst)
+            for raw, ad_neighbour in zip(burst, marks, strict=True):
                 try:
-                    await self._handle_message(raw, stats)
+                    await self._handle_message(raw, stats, ad_neighbour)
                 except (RateLimitedError, PublishUnavailableError):
                     # Курсор остаётся перед этим сообщением — позже его
                     # обработают заново (оно не запомнено как увиденное).
@@ -305,6 +342,31 @@ class AggregatorPipeline:
 
                 stats.messages_fetched += 1
                 newest_external_id = raw.external_id
+            burst.clear()
+
+        try:
+            async for raw in reader.read_new_messages(source, last_external_id):
+                self._mark_progress()
+                if self._stop_requested:
+                    # Сообщение (и недообработанная пачка) не обработаны:
+                    # курсор остаётся перед ними.
+                    burst.clear()
+                    break
+                if processed_count >= self._max_messages_per_source:
+                    logger.warning(
+                        "Достигнут лимит max_messages_per_source=%d для источника '%s'",
+                        self._max_messages_per_source,
+                        source.id,
+                    )
+                    break
+                processed_count += 1
+                if burst and not (self._ad_burst_seconds > 0 and self._same_burst(burst[-1], raw)):
+                    await handle_burst()
+                burst.append(raw)
+                if self._ad_burst_seconds <= 0:
+                    await handle_burst()
+            if burst:
+                await handle_burst()
         except RateLimitedError as exc:
             stop_run = True
             self._register_rate_limit(exc, f"источник '{source.id}'", stats)
@@ -326,9 +388,11 @@ class AggregatorPipeline:
             await self._storage.set_last_external_id(source.id, newest_external_id)
         return stop_run
 
-    async def _handle_message(self, raw: RawMessage, stats: PipelineStats) -> None:
+    async def _handle_message(
+        self, raw: RawMessage, stats: PipelineStats, ad_neighbour: str | None = None
+    ) -> None:
         message = self._process_raw_message(raw)
-        message = self._apply_filters(message)
+        message = self._apply_filters(message, ad_neighbour)
 
         if message.is_filtered_out:
             stats.messages_filtered_out += 1

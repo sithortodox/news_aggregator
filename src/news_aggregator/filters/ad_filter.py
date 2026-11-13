@@ -57,6 +57,10 @@ class AdFilter(IFilter):
     def name(self) -> str:
         return "ad_filter"
 
+    @property
+    def detects_ads(self) -> bool:
+        return True
+
     def should_drop(self, message: ProcessedMessage) -> tuple[bool, str | None]:
         for keyword in self._keywords:
             if keyword and keyword in message.normalized_text:

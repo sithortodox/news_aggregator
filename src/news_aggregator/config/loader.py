@@ -171,6 +171,7 @@ def load_app_config(path: str | Path) -> AppConfig:
             poll_interval_seconds=int(pipeline_raw.get("poll_interval_seconds", 60)),
             max_messages_per_source=int(pipeline_raw.get("max_messages_per_source", 100)),
             stall_timeout_seconds=int(pipeline_raw.get("stall_timeout_seconds", 300)),
+            ad_burst_seconds=int(pipeline_raw.get("ad_burst_seconds", 10)),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise ConfigError(f"Ошибка в структуре конфигурации: {exc}") from exc
@@ -181,6 +182,9 @@ def load_app_config(path: str | Path) -> AppConfig:
             f"{_MIN_STALL_TIMEOUT}: Telethon сам пережидает FloodWait до 60 с, и такая "
             "пауза не должна считаться зависанием"
         )
+
+    if pipeline.ad_burst_seconds < 0:
+        raise ConfigError("pipeline.ad_burst_seconds не может быть отрицательным (0 — выключено)")
 
     if not publishers:
         raise ConfigError("Должен быть указан хотя бы один издатель (publishers)")

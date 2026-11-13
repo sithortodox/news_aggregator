@@ -57,6 +57,12 @@ class IFilter(ABC):
     def name(self) -> str:
         """Короткое имя фильтра для логов и статистики."""
 
+    @property
+    def detects_ads(self) -> bool:
+        """True, если фильтр отсеивает рекламу. Тогда пайплайн отсеивает и
+        соседние сообщения того же поста (см. AggregatorPipeline, ad_burst_seconds)."""
+        return False
+
     @abstractmethod
     def should_drop(self, message: ProcessedMessage) -> tuple[bool, str | None]:
         """Проверяет сообщение.

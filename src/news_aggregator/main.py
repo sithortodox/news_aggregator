@@ -391,6 +391,7 @@ async def build_pipeline(
         storage=storage,
         max_messages_per_source=config.pipeline.max_messages_per_source,
         dry_run=config.pipeline.dry_run,
+        ad_burst_seconds=config.pipeline.ad_burst_seconds,
     )
     return pipeline, source_repository
 

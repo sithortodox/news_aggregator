@@ -75,6 +75,10 @@ class UtmSourceFilter(IFilter):
     def name(self) -> str:
         return "utm_filter"
 
+    @property
+    def detects_ads(self) -> bool:
+        return True
+
     def should_drop(self, message: ProcessedMessage) -> tuple[bool, str | None]:
         for segment in searchable_texts(message):
             decoded = unquote(segment)

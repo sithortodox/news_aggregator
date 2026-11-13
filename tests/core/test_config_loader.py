@@ -301,3 +301,18 @@ def test_stall_timeout_shorter_than_telethon_flood_sleep_is_rejected(
 
     with pytest.raises(ConfigError, match="stall_timeout_seconds"):
         load_app_config(_write(tmp_path, yaml_text))
+
+
+def test_ad_burst_defaults_to_ten_seconds(tmp_path: Path) -> None:
+    config = load_app_config(_write(tmp_path, VALID_YAML))
+
+    assert config.pipeline.ad_burst_seconds == 10
+
+
+def test_negative_ad_burst_is_rejected(tmp_path: Path) -> None:
+    yaml_text = VALID_YAML.replace(
+        "max_messages_per_source: 50", "max_messages_per_source: 50\n  ad_burst_seconds: -1"
+    )
+
+    with pytest.raises(ConfigError, match="ad_burst_seconds"):
+        load_app_config(_write(tmp_path, yaml_text))
