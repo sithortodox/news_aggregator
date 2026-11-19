@@ -2,7 +2,7 @@
 # Секреты (токены, api_id/api_hash) сюда НЕ помещаются — они берутся из .env.
 
 pipeline:
-  dry_run: true              # true = ничего реально не публикуется, только логируется
+  dry_run: false              # true = ничего реально не публикуется, только логируется
   poll_interval_seconds: 60
   max_messages_per_source: 100
 
@@ -17,9 +17,9 @@ alerts:
   cooldown_seconds: 3600          # не чаще раза в час об одной и той же проблеме
 
 sources:
+  - "@media1337"
   # Самый простой способ добавить Telegram-канал — просто username строкой.
   # id, kind (telegram_channel) и display_name подставятся автоматически.
-  # Раскомментируйте и впишите свои каналы (потребуется .env, см. README):
   # - "@some_news_channel"
   # - "@another_channel"
 
@@ -30,12 +30,6 @@ sources:
   #   kind: telegram_group
   # - identifier: "@paused_channel"
   #   enabled: false
-
-  - id: fake_demo_source
-    kind: fake
-    identifier: fake_demo_source
-    display_name: "Демо-источник (для MVP без Telegram)"
-    enabled: true
 
 filters:
   - name: length_filter
@@ -58,7 +52,7 @@ filters:
   # будут отброшены. Причина отсева пишется в лог («рекламная ссылка: ...»).
   - name: utm_filter
     params:
-      param_names: ["utm_source"]
+      param_names: ["utm_source", "utm_medium", "utm_campaign"]
 
 deduplicators:
   - name: text_hash_deduplicator
@@ -79,14 +73,24 @@ deduplicators:
       min_shared_lemmas: 3       # минимум общих основ (2 слова из 5 — не повод)
       number_veto: true          # числа есть в обоих текстах и не совпадают -> не дубль
       min_overlap: null          # 0.0..1.0 — доп. правило «заголовок против полного
+      weighted_min_jaccard: 0.15   # весовой Жаккар (редкие слова весят больше), null — выкл.
+      weighted_dry_run: false       # false — отбрасывать дубли сразу (dry-run выключен)
                                  # текста» (доля общих основ меньшего текста); null — выкл.
+  - name: embedding_deduplicator  # пересказ по смыслу (модель MiniLM)
+    params:
+      min_similarity: 0.80       # косинус к посту другого канала за сутки
+      dry_run: false              # false — отбрасывать дубли сразу (dry-run выключен)
+  - name: image_deduplicator     # та же картинка с другой подписью из другого канала
+    params:
+      max_distance: 20           # 0..255, расстояние Хэмминга между dHash картинок
+      lookback_hours: 24
+      min_text_stems: 4          # если в обоих постах столько основ текста —
+      min_shared_stems: 2        # …нужно ещё столько общих (стоковое фото != дубль)
 
 enrichers: []
 
 publishers:
-  - name: console_publisher
-    params:
-      prefix: "[NEWS]"
+  - name: telegram_publisher
 
 storage:
   name: sqlite
