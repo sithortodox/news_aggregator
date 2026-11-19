@@ -78,7 +78,9 @@ deduplicators:
                                  # текста» (доля общих основ меньшего текста); null — выкл.
   - name: embedding_deduplicator  # пересказ по смыслу (модель MiniLM)
     params:
-      min_similarity: 0.80       # косинус к посту другого канала за сутки
+      min_similarity: 0.73       # косинус к посту другого канала за сутки (0.736 —
+                                 # один и тот же «GTA VI + Международный мужской день»
+                                 # из trendrunet и whackdoor — реальная дубль)
       dry_run: false              # false — отбрасывать дубли сразу (dry-run выключен)
   - name: image_deduplicator     # та же картинка с другой подписью из другого канала
     params:
