@@ -31,6 +31,7 @@ from news_aggregator.config.loader import ConfigError, load_app_config
 from news_aggregator.core.interfaces import (
     IDeduplicator,
     IEmbeddingIndex,
+    IFileHashIndex,
     IImageHashIndex,
     ILemmaSetIndex,
     ISimhashIndex,
@@ -40,6 +41,7 @@ from news_aggregator.core.interfaces import (
 from news_aggregator.core.lemmatize import extract_lemma_set, numbers_in, stem_set
 from news_aggregator.core.models import (
     EmbeddingRecord,
+    FileHashRecord,
     ImageHashRecord,
     ProcessedMessage,
     RawMessage,
@@ -116,6 +118,17 @@ class _MemoryImageHashIndex(IImageHashIndex):
         return []
 
     async def save(self, record: ImageHashRecord, external_id: str) -> None:
+        return None
+
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        return 0
+
+
+class _MemoryFileHashIndex(IFileHashIndex):
+    async def find_recent(self, since: datetime) -> list[FileHashRecord]:
+        return []
+
+    async def save(self, record: FileHashRecord, external_id: str) -> None:
         return None
 
     async def purge_older_than(self, cutoff: datetime) -> int:
@@ -212,6 +225,10 @@ def _build_layers(config_path: str, frequencies_db: str | None = None) -> list[I
         elif component.name == "image_deduplicator":
             # Сравниваются только тексты: картинок у dedup_explain нет.
             kwargs = {"index": _MemoryImageHashIndex(), "hasher": None}
+        elif component.name == "file_hash_deduplicator":
+            # Контентные хэши у dedup_explain не вычислить (нет скачивания),
+            # поэтому слой сравнивает только сохраняемые/проверяемые хэши.
+            kwargs = {"index": _MemoryFileHashIndex(), "hasher": None}
         else:
             kwargs = {"storage": storage}
         created = registry.deduplicators.create(component.name, **kwargs, **component.params)

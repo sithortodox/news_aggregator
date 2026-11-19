@@ -16,6 +16,7 @@ import logging
 
 from news_aggregator.core.registry import ComponentRegistry
 from news_aggregator.dedup.embedding_deduplicator import EmbeddingDeduplicator
+from news_aggregator.dedup.file_hash_deduplicator import FileHashDeduplicator
 from news_aggregator.dedup.hash_deduplicator import TextHashDeduplicator
 from news_aggregator.dedup.image_deduplicator import ImageDeduplicator
 from news_aggregator.dedup.link_deduplicator import LinkDeduplicator
@@ -27,6 +28,7 @@ from news_aggregator.filters.utm_filter import UtmSourceFilter
 from news_aggregator.publishers.console_publisher import ConsolePublisher
 from news_aggregator.sources.fake_source import FakeSourceReader
 from news_aggregator.storage.sqlite_embedding_index import SqliteEmbeddingIndex
+from news_aggregator.storage.sqlite_file_hash_index import SqliteFileHashIndex
 from news_aggregator.storage.sqlite_image_hash_index import SqliteImageHashIndex
 from news_aggregator.storage.sqlite_lemma_index import SqliteLemmaIndex
 from news_aggregator.storage.sqlite_run_stats import SqliteRunStatsStore
@@ -48,8 +50,8 @@ def build_registry() -> ComponentRegistry:
     registry.filters.register("utm_filter", UtmSourceFilter)
 
     # Дедупликаторы. text_hash/link принимают storage, simhash_deduplicator и
-    # paraphrase_deduplicator — index (свой отдельный индекс), image_deduplicator —
-    # index и hasher (скачивает картинки) - подстановка происходит в
+    # paraphrase_deduplicator — index (свой отдельный индекс), image_deduplicator и
+    # file_hash_deduplicator — index + hasher (скачивает медиа) —
     # main.py._build_deduplicators.
     registry.deduplicators.register("text_hash_deduplicator", TextHashDeduplicator)
     registry.deduplicators.register("link_deduplicator", LinkDeduplicator)
@@ -57,6 +59,7 @@ def build_registry() -> ComponentRegistry:
     registry.deduplicators.register("paraphrase_deduplicator", ParaphraseDeduplicator)
     registry.deduplicators.register("embedding_deduplicator", EmbeddingDeduplicator)
     registry.deduplicators.register("image_deduplicator", ImageDeduplicator)
+    registry.deduplicators.register("file_hash_deduplicator", FileHashDeduplicator)
 
     # Обогатители: пока нет ни одного встроенного (Stage вне рамок MVP),
     # но категория уже готова к расширению без изменения пайплайна.
@@ -85,6 +88,10 @@ def build_registry() -> ComponentRegistry:
     # Индекс отпечатков картинок для image_deduplicator (см.
     # storage/sqlite_image_hash_index.py)
     registry.image_hash_indexes.register("sqlite", SqliteImageHashIndex)
+
+    # Индекс контент-хэшей файлов для file_hash_deduplicator (см.
+    # storage/sqlite_file_hash_index.py)
+    registry.file_hash_indexes.register("sqlite", SqliteFileHashIndex)
 
     # Частоты основ слов для весового правила paraphrase_deduplicator (см.
     # storage/sqlite_stem_frequency_index.py)
@@ -121,6 +128,7 @@ def _try_register_telegram(registry: ComponentRegistry) -> None:
     """Регистрирует Telegram-компоненты, если установлен пакет telethon."""
     try:
         from news_aggregator.publishers.telegram_publisher import TelegramPublisher
+        from news_aggregator.sources.telegram_file_hasher import TelegramFileHasher
         from news_aggregator.sources.telegram_image_hasher import TelegramImageHasher
         from news_aggregator.sources.telegram_source import TelegramSourceReader
     except ImportError:
@@ -133,3 +141,7 @@ def _try_register_telegram(registry: ComponentRegistry) -> None:
     registry.sources.register("telegram", TelegramSourceReader)
     registry.publishers.register("telegram_publisher", TelegramPublisher)
     registry.image_hashers.register("telegram", TelegramImageHasher)
+
+    # Content-хэш файлов (SHA-256) для file_hash_deduplicator (см.
+    # sources/telegram_file_hasher.py)
+    registry.file_hashers.register("telegram", TelegramFileHasher)

@@ -141,6 +141,25 @@ class ImageHashRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class FileHashRecord:
+    """Отпечаток файла (контент) недавно опубликованного поста (см. IFileHashIndex).
+
+    Используется file_hash_deduplicator'ом: сравнивается SHA-256 контента
+    медиа, ловя дубли «одинаковое медиа — разные тексты» (например, один и тот
+    же файл из разных источников с разными подписями).
+
+    Attributes:
+        file_hash: SHA-256 хэш содержимого файла.
+        source_id: Источник поста: файлы сравниваются только между разными.
+        stems: Основы лемм текста поста — для проверки, что тексты не о разном.
+    """
+
+    file_hash: str
+    source_id: str
+    stems: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class DeduplicationResult:
     """Результат проверки сообщения на дублирование.
 

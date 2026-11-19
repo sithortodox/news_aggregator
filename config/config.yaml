@@ -86,6 +86,13 @@ deduplicators:
       lookback_hours: 24
       min_text_stems: 4          # если в обоих постах столько основ текста —
       min_shared_stems: 2        # …нужно ещё столько общих (стоковое фото != дубль)
+  - name: file_hash_deduplicator  # тот же файл/медиа из другого канала, другой текст
+    params:
+      lookback_hours: 24        # окно сравнения
+      min_text_stems: 4          # если в обоих постах столько основ текста —
+      min_shared_stems: 2        # …нужно ещё столько общих (стоковое фото != дубль)
+                               # (SHA-256 контента ловит переупаковки с другими
+                               #  file_id, которых не видит text_hash-фingerprint)
 
 enrichers: []
 

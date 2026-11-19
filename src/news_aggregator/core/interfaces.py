@@ -15,6 +15,7 @@ from datetime import datetime
 from news_aggregator.core.models import (
     DeduplicationResult,
     EmbeddingRecord,
+    FileHashRecord,
     ImageHashRecord,
     MediaAttachment,
     PipelineStats,
@@ -216,6 +217,42 @@ class IImageHashIndex(ABC):
     @abstractmethod
     async def save(self, record: ImageHashRecord, external_id: str) -> None:
         """Сохраняет отпечаток с текущей меткой времени."""
+
+    @abstractmethod
+    async def purge_older_than(self, cutoff: datetime) -> int:
+        """Удаляет записи старше cutoff. Возвращает число удалённых записей."""
+
+
+class IFileHasher(ABC):
+    """Считает SHA-256 контент-хэш медиафайла для file_hash_deduplicator.
+
+    Реализация живёт в адаптере источника (как IImageHasher) и скачивает
+    файл по MediaAttachment.native_ref. Ядро получает готовый хэш строки.
+    """
+
+    @abstractmethod
+    async def hash(self, media: MediaAttachment) -> str | None:
+        """SHA-256 хэш содержимого файла или None, если файла нет или скачать не вышло.
+
+        Ограничение частоты запросов сообщает через RateLimitedError, как ридеры
+        и издатели: пайплайн поставит паузу и обработает сообщение позже.
+        """
+
+
+class IFileHashIndex(ABC):
+    """Хранилище контент-хэшей файлов недавних постов (для FileHashDeduplicator).
+
+    Как и остальные индексы, само ограничивает объём: purge_older_than
+    вызывается дедупликатором при каждом remember().
+    """
+
+    @abstractmethod
+    async def find_recent(self, since: datetime) -> list[FileHashRecord]:
+        """Возвращает контент-хэши всех файлов, сохранённых с момента since."""
+
+    @abstractmethod
+    async def save(self, record: FileHashRecord, external_id: str) -> None:
+        """Сохраняет хэш файла с текущей меткой времени."""
 
     @abstractmethod
     async def purge_older_than(self, cutoff: datetime) -> int:

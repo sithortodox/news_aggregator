@@ -35,6 +35,7 @@ from news_aggregator.config.schema import AppConfig, ComponentConfig
 from news_aggregator.core.interfaces import (
     IDeduplicator,
     IEnricher,
+    IFileHasher,
     IFilter,
     IImageHasher,
     ILemmaSetIndex,
@@ -127,6 +128,7 @@ def _build_deduplicators(
     storage: IStorage,
     shared_db_path: str,
     image_hasher: IImageHasher | None = None,
+    file_hasher: IFileHasher | None = None,
 ) -> list[IDeduplicator]:
     deduplicators: list[IDeduplicator] = []
     # char- и word-режимы SimHash дают несравнимые отпечатки для одного и
@@ -189,6 +191,17 @@ def _build_deduplicators(
                     "sqlite", db_path=shared_db_path, table_name=index_name
                 ),
                 hasher=image_hasher,
+                **params,
+            )
+        elif c.name == "file_hash_deduplicator":
+            params = dict(c.params)
+            index_name = str(params.pop("index_name", "seen_file_hashes"))
+            created = registry.deduplicators.create(
+                c.name,
+                index=registry.file_hash_indexes.create(
+                    "sqlite", db_path=shared_db_path, table_name=index_name
+                ),
+                hasher=file_hasher,
                 **params,
             )
         else:
@@ -355,15 +368,21 @@ async def build_pipeline(
         registry, config, telegram_client_cache, connect=connect_telegram
     )
     readers = await _build_readers(registry, telegram_client_cache, connect=connect_telegram)
-    # Дедупликаторы — после ридеров: image_deduplicator скачивает картинки тем же
-    # Telegram-клиентом, а он появляется только вместе с ридером или издателем.
+    # Дедупликаторы — после ридеров: image_deduplicator и file_hash_deduplicator
+    # скачивают медиа тем же Telegram-клиентом, а он появляется только вместе
+    # с ридером или издателем.
     image_hasher: IImageHasher | None = None
+    file_hasher: IFileHasher | None = None
     if "client" in telegram_client_cache and "telegram" in registry.image_hashers.available():
         image_hasher = registry.image_hashers.create(  # type: ignore[assignment]
             "telegram", client=telegram_client_cache["client"]
         )
+    if "client" in telegram_client_cache and "telegram" in registry.file_hashers.available():
+        file_hasher = registry.file_hashers.create(  # type: ignore[assignment]
+            "telegram", client=telegram_client_cache["client"]
+        )
     deduplicators = _build_deduplicators(
-        registry, config, storage, _shared_sqlite_db_path(config), image_hasher
+        registry, config, storage, _shared_sqlite_db_path(config), image_hasher, file_hasher
     )
 
     source_repository: ISourceRepository = registry.source_repositories.create(  # type: ignore[assignment]
