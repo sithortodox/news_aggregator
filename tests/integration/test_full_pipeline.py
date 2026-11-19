@@ -1,9 +1,11 @@
 """Интеграционный тест полного цикла.
 
-Проверяет весь путь: чтение реального config.yaml проекта -> сборка
-ComponentRegistry -> сборка AggregatorPipeline -> один прогон с
-FakeSourceReader и ConsolePublisher, без реального Telegram и без
-использования каких-либо внешних сервисов.
+Проверяет путь: чтение config.yaml проекта -> сборка ComponentRegistry ->
+сборка AggregatorPipeline -> один прогон с FakeSourceReader и ConsolePublisher,
+без реального Telegram и без использования каких-либо внешних сервисов.
+
+Источник — фейковый (FakeSourceReader): живой Telegram-конфиг сейчас
+направлен на реальные каналы и в CI не должен к ним обращаться.
 """
 
 from __future__ import annotations
@@ -14,15 +16,100 @@ from news_aggregator.bootstrap import build_registry
 from news_aggregator.config.loader import load_app_config
 from news_aggregator.main import build_pipeline
 
-_PROJECT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+_FAKE_SOURCE_CONFIG = """\
+pipeline:
+  dry_run: true
+  poll_interval_seconds: 60
+  max_messages_per_source: 100
+
+alerts:
+  enabled: true
+  source_failure_threshold: 5
+  publish_failure_threshold: 1
+  flood_wait_alert_seconds: 300
+  cooldown_seconds: 3600
+
+sources:
+  - identifier: "fake_demo_source"
+    kind: fake
+    display_name: "Fake Demo"
+
+filters:
+  - name: length_filter
+    params:
+      min_length: 20
+  - name: ad_filter
+    params:
+      keywords:
+        - "реклама"
+        - "промокод"
+        - "подпишись и выиграй"
+      patterns:
+        - '(?<![a-z0-9])erid\\s*[:=]?\\s*[a-z0-9]{6,}'
+  - name: utm_filter
+    params:
+      param_names: ["utm_source", "utm_medium", "utm_campaign"]
+
+deduplicators:
+  - name: text_hash_deduplicator
+  - name: link_deduplicator
+  - name: simhash_deduplicator
+    params:
+      max_hamming_distance: 4
+      lookback_hours: 12
+      shingle_size: 3
+  - name: paraphrase_deduplicator
+    params:
+      min_jaccard: 0.17
+      lookback_hours: 24
+      min_lemmas: 4
+      stem_length: 5
+      min_shared_lemmas: 3
+      number_veto: true
+      min_overlap: null
+      weighted_min_jaccard: 0.15
+      weighted_dry_run: false
+  - name: embedding_deduplicator
+    params:
+      min_similarity: 0.80
+      dry_run: false
+  - name: image_deduplicator
+    params:
+      max_distance: 20
+      lookback_hours: 24
+      min_text_stems: 4
+      min_shared_stems: 2
+  - name: file_hash_deduplicator
+    params:
+      lookback_hours: 24
+      min_text_stems: 4
+      min_shared_stems: 2
+
+enrichers: []
+
+publishers:
+  - name: console_publisher
+
+storage:
+  name: sqlite
+  params:
+    db_path: "data/state.db"
+"""
 
 
-async def test_full_pipeline_from_real_config_dry_run(tmp_path: Path) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "integration_state.db"
+def _write_fake_config(tmp_path: Path, *, dry_run: bool = True) -> Path:
+    config_text = _FAKE_SOURCE_CONFIG
+    db_path = tmp_path / "state.db"
     config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
+    if not dry_run:
+        config_text = config_text.replace("dry_run: true", "dry_run: false")
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
+    return config_path
+
+
+async def test_full_pipeline_from_fake_source_dry_run(tmp_path: Path) -> None:
+    config_path = _write_fake_config(tmp_path)
 
     config = load_app_config(config_path)
     registry = build_registry()
@@ -36,15 +123,11 @@ async def test_full_pipeline_from_real_config_dry_run(tmp_path: Path) -> None:
     assert stats.messages_filtered_out == 2
     assert stats.messages_published == 3
     assert stats.sources_failed == 0
-    assert db_path.exists()
+    assert (tmp_path / "state.db").exists()
 
 
 async def test_second_run_has_nothing_new_due_to_cursor(tmp_path: Path) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path)
 
     config = load_app_config(config_path)
     registry = build_registry()
@@ -60,12 +143,7 @@ async def test_second_run_has_nothing_new_due_to_cursor(tmp_path: Path) -> None:
 
 
 async def test_real_publish_mode_actually_invokes_publisher(tmp_path: Path) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
-    config_text = config_text.replace("dry_run: true", "dry_run: false")
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path, dry_run=False)
 
     config = load_app_config(config_path)
     registry = build_registry()
@@ -82,18 +160,14 @@ async def test_channel_added_via_repository_is_picked_up_without_rebuilding_pipe
     """Полный путь, моделирующий то, что делает бот через /add: канал
     добавляется напрямую в ISourceRepository, а не в config.yaml, и должен
     быть подхвачен следующим run_once() без пересборки пайплайна."""
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "integration_state.db"
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path)
 
     config = load_app_config(config_path)
     registry = build_registry()
     pipeline, source_repository = await build_pipeline(config, registry)
 
     stats_before = await pipeline.run_once()
-    assert stats_before.sources_total == 1  # только исходный fake_demo_source
+    assert stats_before.sources_total == 1
 
     from news_aggregator.core.models import Source, SourceKind
 

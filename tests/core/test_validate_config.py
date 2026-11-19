@@ -9,17 +9,68 @@ import pytest
 
 from news_aggregator.main import _async_main
 
-_PROJECT_CONFIG = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+# Конфиг для тестов --validate-config: фейковый источник вместо живых
+# Telegram-каналов (как было в реальном config.yaml до перехода на живые
+# источники). Без фейка в CI не хватает Telegram-ключей и демо-сообщений.
+_FAKE_SOURCE_CONFIG = """\
+pipeline:
+  dry_run: true
+  poll_interval_seconds: 60
+  max_messages_per_source: 100
+
+alerts:
+  enabled: true
+  source_failure_threshold: 5
+  publish_failure_threshold: 1
+  flood_wait_alert_seconds: 300
+  cooldown_seconds: 3600
+
+sources:
+  - identifier: "fake_demo_source"
+    kind: fake
+    display_name: "Fake Demo"
+
+filters: []
+
+deduplicators: []
+
+enrichers: []
+
+publishers:
+  - name: console_publisher
+
+storage:
+  name: sqlite
+  params:
+    db_path: "data/state.db"
+"""
 
 
-async def test_validate_config_succeeds_on_real_config(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "validate_state.db"
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
+def _write_fake_config(
+    tmp_path: Path,
+    *,
+    source_failure_threshold: int = 5,
+    alerts_enabled: bool = True,
+) -> Path:
+    config_text = _FAKE_SOURCE_CONFIG
+    config_text = config_text.replace(
+        'db_path: "data/state.db"', f'db_path: "{tmp_path / "state.db"}"'
+    )
+    config_text = config_text.replace(
+        "source_failure_threshold: 5", f"source_failure_threshold: {source_failure_threshold}"
+    )
+    config_text = config_text.replace(
+        "alerts:\n  enabled: true", f"alerts:\n  enabled: {'true' if alerts_enabled else 'false'}"
+    )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(config_text, encoding="utf-8")
+    return config_path
+
+
+async def test_validate_config_succeeds_on_fake_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = _write_fake_config(tmp_path)
 
     exit_code = await _async_main(["--config", str(config_path), "--validate-config"])
 
@@ -32,48 +83,28 @@ async def test_validate_config_succeeds_on_real_config(
 async def test_validate_config_fails_on_duplicate_channel(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        """
-sources:
-  - "@news"
-  - "@news"
-publishers:
-  - name: console_publisher
-""",
+        'sources:\n  - "@news"\n  - "@news"\npublishers:\n  - name: console_publisher\n',
         encoding="utf-8",
     )
 
-    exit_code = await _async_main(["--config", str(config_path), "--validate-config"])
-
-    assert exit_code == 1
+    assert await _async_main(["--config", str(config_path), "--validate-config"]) == 1
 
 
 async def test_validate_config_does_not_advance_cursor(tmp_path: Path) -> None:
     """--validate-config не должен считаться прогоном пайплайна: курсор
     источников должен остаться нетронутым для последующего --once."""
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    db_path = tmp_path / "validate_state.db"
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{db_path}"')
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path)
 
     await _async_main(["--config", str(config_path), "--validate-config"])
     exit_code = await _async_main(["--config", str(config_path), "--once"])
 
     assert exit_code == 0
-    # Если бы --validate-config запускал пайплайн, курсор уже был бы продвинут
-    # и второй вызов --once не нашёл бы новых сообщений. Проверяем через сам
-    # факт того, что второй вызов не падает и обрабатывает демо-сообщения
-    # (более точная проверка стата вынесена в test_full_pipeline.py).
 
 
 async def test_validate_config_prints_alert_settings(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{tmp_path / "s.db"}"')
-    config_text = config_text.replace("source_failure_threshold: 5", "source_failure_threshold: 7")
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path, source_failure_threshold=7)
 
     exit_code = await _async_main(["--config", str(config_path), "--validate-config"])
 
@@ -86,11 +117,7 @@ async def test_validate_config_prints_alert_settings(
 async def test_validate_config_reports_disabled_alerts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    config_text = _PROJECT_CONFIG.read_text(encoding="utf-8")
-    config_text = config_text.replace('db_path: "data/state.db"', f'db_path: "{tmp_path / "s.db"}"')
-    config_text = config_text.replace("alerts:\n  enabled: true", "alerts:\n  enabled: false")
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(config_text, encoding="utf-8")
+    config_path = _write_fake_config(tmp_path, alerts_enabled=False)
 
     await _async_main(["--config", str(config_path), "--validate-config"])
 
