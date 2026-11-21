@@ -54,7 +54,7 @@ class EmbeddingDeduplicator(IDeduplicator):
         self,
         index: IEmbeddingIndex,
         embedder: ITextEmbedder | None,
-        min_similarity: float = 0.73,
+        min_similarity: float = 0.65,
         lookback_hours: float = 24.0,
         min_text_stems: int = 4,
         min_shared_stems: int = 3,
